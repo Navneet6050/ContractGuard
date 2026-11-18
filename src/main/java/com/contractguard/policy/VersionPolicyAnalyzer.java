@@ -34,12 +34,12 @@ public final class VersionPolicyAnalyzer {
         if (hasBreakingFindings && bump != Semver.Bump.MAJOR) {
             out.add(new PolicyFinding("VERSION.POLICY.BREAKING_WITHOUT_MAJOR", Severity.WARN,
                     "breaking changes detected but version bumped "
-                            + bumpName(bump) + " (" + oldVersion + " → " + newVersion
+                            + bumpName(bump) + " (" + oldVersion + " -> " + newVersion
                             + "); a major bump is required by policy"));
         }
         if (!hasBreakingFindings && bump == Semver.Bump.MAJOR) {
             out.add(new PolicyFinding("VERSION.POLICY.MAJOR_WITHOUT_BREAKING", Severity.INFO,
-                    "major version bump (" + oldVersion + " → " + newVersion
+                    "major version bump (" + oldVersion + " -> " + newVersion
                             + ") without detected breaking changes"));
         }
         return out;

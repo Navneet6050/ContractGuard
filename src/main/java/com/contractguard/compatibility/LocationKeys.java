@@ -3,11 +3,12 @@ package com.contractguard.compatibility;
 /**
  * Parser for effective-schema map keys ("VERB /pathShape :: scope"). Key format is
  * produced by the specs module ({@code EffectiveLocation.key()}); this class only
- * reads it — never re-parses YAML or re-canonicalizes schemas.
+ * reads it — never re-parses YAML or re-canonicalizes schemas. Public so the impact
+ * module can match findings to consumer bindings by operation shape.
  */
-final class LocationKeys {
+public final class LocationKeys {
 
-    record Operation(String verb, String shape) implements Comparable<Operation> {
+    public record Operation(String verb, String shape) implements Comparable<Operation> {
         @Override
         public int compareTo(Operation other) {
             int byShape = shape.compareTo(other.shape);
@@ -18,7 +19,7 @@ final class LocationKeys {
     private LocationKeys() {
     }
 
-    static Operation operationOf(String key) {
+    public static Operation operationOf(String key) {
         int separator = key.indexOf(" :: ");
         String left = separator >= 0 ? key.substring(0, separator) : key;
         int space = left.indexOf(' ');
@@ -28,7 +29,7 @@ final class LocationKeys {
         return new Operation(left.substring(0, space), left.substring(space + 1));
     }
 
-    static String scopeOf(String key) {
+    public static String scopeOf(String key) {
         int separator = key.indexOf(" :: ");
         return separator >= 0 ? key.substring(separator + 4) : "";
     }

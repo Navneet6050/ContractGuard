@@ -24,7 +24,9 @@ import tools.jackson.databind.node.ObjectNode;
  * as the literal "null").
  *
  * Also collects a pathShape → rawPath alias map (first raw path wins) so findings can
- * display the human path while matching stays shape-based.
+ * display the human path while matching stays shape-based, and a locationKey → parameter
+ * NAME index (the envelopes themselves stay name-free) so downstream impact analysis can
+ * match consumer-declared parameter names against {@code param:<in>:<ordinal>} findings.
  */
 final class EffectiveSchemaExtractor {
 
@@ -32,6 +34,7 @@ final class EffectiveSchemaExtractor {
 
     private final JsonNode root;
     private final Map<String, String> pathAliases = new TreeMap<>();
+    private final Map<String, String> paramNames = new TreeMap<>();
 
     EffectiveSchemaExtractor(JsonNode root) {
         this.root = root;
@@ -89,11 +92,16 @@ final class EffectiveSchemaExtractor {
                 continue; // never emit params for placeholders the template does not have
             }
             String scope = "param:" + in + ":" + counters.merge(in, 1, Integer::sum);
+            String locationKey = new EffectiveLocation(verb, pathShape, scope).key();
+            String paramName = text(param, "name");
+            if (paramName != null) {
+                paramNames.put(locationKey, paramName);
+            }
             JsonNode schema = param.get("schema");
             ObjectNode envelope = JsonNodeFactory.instance.objectNode();
             envelope.put("required", requiredFlag(param));
             envelope.set("schema", schema != null ? expandNode(schema, 0) : JsonNodeFactory.instance.nullNode());
-            out.put(new EffectiveLocation(verb, pathShape, scope).key(),
+            out.put(locationKey,
                     JsonMappers.writeCanonical(CanonicalJson.canonicalize(envelope)));
         }
 
@@ -248,5 +256,10 @@ final class EffectiveSchemaExtractor {
     /** pathShape → first raw path template seen at that shape. */
     Map<String, String> getPathAliases() {
         return Map.copyOf(pathAliases);
+    }
+
+    /** locationKey ("VERB /shape :: param:in:ordinal") → parameter name. */
+    Map<String, String> getParamNames() {
+        return Map.copyOf(paramNames);
     }
 }

@@ -17,6 +17,8 @@ contractguard:
   # Untouched starter-kit webhook receiver (Python, stdlib). Inside Docker Compose this
   # must point at the service name; locally it is the published host port.
   webhook-url: ${WEBHOOK_URL:http://localhost:9900/contractguard}
+  # Read-only starter-kit consumer declarations (loaded at startup, never modified).
+  consumers-dir: ${CONSUMERS_DIR:consumers}
 
 logging:
   level:

@@ -49,6 +49,7 @@ public class SpecParser {
                 canonicalJson,
                 effective,
                 extractor.getPathAliases(),
+                extractor.getParamNames(),
                 deprecations,
                 null);
     }

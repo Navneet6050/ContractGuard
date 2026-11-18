@@ -5,27 +5,122 @@
   <title>Contract Guard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: system-ui, sans-serif; margin: 24px; color: #1a1a2e; }
+    body { font-family: system-ui, sans-serif; margin: 24px; color: #1a1a2e; max-width: 1100px; }
     h1 { margin-bottom: 4px; }
     .sub { color: #666; margin-bottom: 24px; }
-    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; max-width: 640px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
     pre { background: #f5f5f7; padding: 12px; border-radius: 6px; overflow-x: auto; }
-    .placeholder { color: #888; font-style: italic; }
+    textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; height: 140px; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    button { padding: 8px 16px; border-radius: 6px; border: 1px solid #3556c7; background: #3556c7; color: #fff; cursor: pointer; }
+    button:disabled { background: #999; border-color: #999; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; }
+    .AFFECTED { background: #d93025; color: #fff; }
+    .POSSIBLE { background: #f9ab00; color: #222; }
+    .NONE { background: #188038; color: #fff; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
+    th { background: #f0f2f8; }
+    code { background: #f0f2f8; padding: 1px 4px; border-radius: 4px; }
+    .muted { color: #777; }
+    ul { margin: 4px 0 0 16px; padding: 0; }
+    li { margin-bottom: 3px; }
   </style>
 </head>
 <body>
   <h1>Contract Guard</h1>
   <p class="sub">API contract registry &amp; breaking-change detection</p>
+
   <div class="card">
     <h2>Health</h2>
     <pre id="health">loading…</pre>
-    <p class="placeholder">Phase 1 scaffold. Publishing workflow, findings and audit
-    pages arrive with the pipeline modules.</p>
   </div>
+
+  <div class="card">
+    <h2>Consumer impact for a version transition</h2>
+    <label>Provider service (slug as used in consumer files, e.g. <code>quote-api</code>)</label>
+    <input id="service" value="quote-api" style="width:300px">
+    <label>Currently published spec (YAML)</label>
+    <textarea id="oldSpec" placeholder="paste current spec YAML"></textarea>
+    <label>Candidate spec (YAML)</label>
+    <textarea id="newSpec" placeholder="paste candidate spec YAML"></textarea>
+    <p><button id="analyze">Analyze consumer impact</button></p>
+    <div id="impactOut" class="muted">No analysis yet.</div>
+  </div>
+
   <script>
     fetch('/api/health').then(r => r.json())
       .then(j => { document.getElementById('health').textContent = JSON.stringify(j, null, 2); })
       .catch(e => { document.getElementById('health').textContent = 'health check failed: ' + e; });
+
+    document.getElementById('analyze').addEventListener('click', async () => {
+      const out = document.getElementById('impactOut');
+      const btn = document.getElementById('analyze');
+      const service = document.getElementById('service').value.trim();
+      const oldSpec = document.getElementById('oldSpec').value;
+      const newSpec = document.getElementById('newSpec').value;
+      if (!service || !oldSpec.trim() || !newSpec.trim()) {
+        out.textContent = 'service and both specs are required.';
+        return;
+      }
+      btn.disabled = true; btn.textContent = 'Analyzing…';
+      try {
+        const res = await fetch('/api/impact', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service, oldSpec, newSpec })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          out.textContent = 'Error ' + res.status + ': ' + (err.error || 'request failed');
+          return;
+        }
+        render(await res.json());
+      } catch (e) {
+        out.textContent = 'request failed: ' + e;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Analyze consumer impact';
+      }
+    });
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function render(report) {
+      const out = document.getElementById('impactOut');
+      let html = '<p><b>' + esc(report.service) + '</b> ' + esc(report.oldVersion)
+        + ' → ' + esc(report.newVersion) + ' — ' + esc(String(report.findings.length))
+        + ' finding(s), ' + report.summary.affectedCount + ' affected / '
+        + report.summary.possibleCount + ' possible / ' + report.summary.unaffectedCount
+        + ' unaffected consumer(s)</p>';
+
+      if (report.findings.length) {
+        html += '<h3>Compatibility findings</h3><table><tr><th>Severity</th><th>Code</th><th>Location</th><th>Field</th><th>Detail</th></tr>';
+        for (const f of report.findings) {
+          html += '<tr><td>' + esc(f.severity) + '</td><td><code>' + esc(f.code) + '</code></td><td>'
+            + esc(f.location) + '</td><td>' + esc(f.fieldPath || '') + '</td><td>' + esc(f.detail) + '</td></tr>';
+        }
+        html += '</table>';
+      }
+
+      html += '<h3>Consumer impact</h3>';
+      for (const c of report.summary.consumers) {
+        html += '<p><span class="badge ' + esc(c.level) + '">' + esc(c.level) + '</span> <b>'
+          + esc(c.consumer) + '</b> <span class="muted">(' + esc(c.team) + ')</span> — '
+          + esc(c.reason) + (c.operations.length ? ' · uses ' + esc(c.operations.join(', ')) : '') + '</p>';
+        if (c.impacts.length) {
+          html += '<ul>';
+          for (const i of c.impacts) {
+            html += '<li><span class="badge ' + esc(i.level) + '">' + esc(i.level) + '</span> '
+              + '<code>' + esc(i.findingCode) + '</code> ' + esc(i.location)
+              + (i.fieldPath ? ' · <code>' + esc(i.fieldPath) + '</code>' : '') + '<br>'
+              + esc(i.reason) + '</li>';
+          }
+          html += '</ul>';
+        }
+      }
+      out.innerHTML = html;
+    }
   </script>
 </body>
 </html>

@@ -19,12 +19,13 @@ public final class SpecDocument {
     private final String canonicalJson;
     private final Map<String, String> effectiveSchemas;
     private final Map<String, String> pathAliases;
+    private final Map<String, String> paramNames;
     private final List<DeprecationRecord> deprecations;
     private final transient OpenAPI model;
 
     public SpecDocument(String openapiVersion, String title, String specVersion,
                         String canonicalJson, Map<String, String> effectiveSchemas,
-                        Map<String, String> pathAliases,
+                        Map<String, String> pathAliases, Map<String, String> paramNames,
                         List<DeprecationRecord> deprecations, OpenAPI model) {
         this.openapiVersion = openapiVersion;
         this.title = title;
@@ -32,6 +33,7 @@ public final class SpecDocument {
         this.canonicalJson = canonicalJson;
         this.effectiveSchemas = Map.copyOf(effectiveSchemas);
         this.pathAliases = Map.copyOf(pathAliases);
+        this.paramNames = Map.copyOf(paramNames);
         this.deprecations = List.copyOf(deprecations);
         this.model = model;
     }
@@ -43,6 +45,8 @@ public final class SpecDocument {
     public Map<String, String> getEffectiveSchemas() { return effectiveSchemas; }
     /** pathShape → raw path template (e.g. "/quotes/{0}" → "/quotes/{quoteId}"). */
     public Map<String, String> getPathAliases() { return pathAliases; }
+    /** locationKey ("VERB /shape :: param:in:ordinal") → parameter name. */
+    public Map<String, String> getParamNames() { return paramNames; }
     public List<DeprecationRecord> getDeprecations() { return deprecations; }
     public OpenAPI getModel() { return model; }
 }
