@@ -7,6 +7,13 @@ Facts come from the reconnaissance of the actual files plus toolchain inspection
 research on 2026-11-18; assumptions are explicitly marked and are the questions to confirm
 with the product owner.
 
+**Status: decision log complete and audited as-built against the shipped code (`93ceeff`).**
+Decisions B-11–B-14 were added as the build progressed (deployment extras, persistence
+hardening, CI gate, serialization). Outdated statements have been corrected in place with the
+correction dated; historical context is preserved. See [PLAN.md](PLAN.md) §13 for the
+plan-vs-as-built audit and [REVIEW.md](REVIEW.md) for the engineering review. Section F
+records how the assumption ledger resolved.
+
 ---
 
 ## A. Product & policy decisions (unchanged from R1)
@@ -97,6 +104,10 @@ unknowable").
 `POST /services/{slug}/specs`; `POST /admin/import-kit` scans the untouched `specs/` +
 `consumers/` folders in filename order for the demo. ⚠️ Assumption: README leaves ingestion
 mode open; both paths are provided so either evaluation style works.
+**As-built correction (M5):** the admin endpoint was **not shipped** — the same job is done
+by the startup `KitSeeder` (idempotent, driven by `KIT_IMPORT=true`, imports through the real
+pipeline in filename order with a `KIT_IMPORT` audit marker per service). One less privileged
+surface, same demo behavior; verified live at release.
 
 ## B. Technical decisions
 
@@ -129,6 +140,12 @@ form independent of the parser's object graph. Component renames with identical 
 note at most. Consequence: the trap yields zero breaking findings plus a "cosmetic reorg,
 0 breaking" note that proves the engine worked. Cycle/depth guard (50) documented as
 limitation (kit has no cycles).
+**As-built additions (M6/M7):** the extractor hardened to resolve `$ref`s at *every* location
+kind (including `$ref`-wrapped parameters, request bodies and responses — a referenced
+location compares identically to its inline twin), emits the opaque
+`{"x-circular": "<wire path>"}` marker for recursive schemas, and captures media-type
+(`content:`) parameters as `x-content` inside the envelope; `93ceeff` added the
+`x-serialization` envelope (see B-13). Corner cases pinned in `ExtractionCornerCasesTest`.
 
 **B-03 — Consumer matching = method + normalized path shape; placeholder names ignored.**
 Context: consumer files say `GET /quotes/{id}` with `sends: [id]` while specs ≥1.1.0 use
@@ -195,8 +212,12 @@ start with both files. Inside Compose the app reaches the receiver at
 `http://webhook-receiver:9000/contractguard` (shared default network); locally at
 `http://localhost:9900/contractguard` — selected by `WEBHOOK_URL` env with those defaults.
 Receiver keeps in-memory state (documented limitation: restart clears notifications; our
-`notifications` table is the durable log). Fire-and-forget `RestClient` delivery with one
-retry; failures logged, never block publishing. Dockerfile is multi-stage
+`notifications` table is the durable log). Fire-and-forget `RestClient` delivery —
+**as-built correction (release): a single delivery attempt, no retry** (originally planned
+with one retry; a failed delivery is already recorded in `notifications` with a compact
+status and the publication is committed before delivery, so a retry added risk without
+value; retry queues remain out of scope §E). Failures logged, never block publishing.
+Dockerfile is multi-stage
 (`maven:3.9-eclipse-temurin-21` → `eclipse-temurin:21-jre`); fallback for slow first image
 builds: slim Dockerfile copying a locally built jar.
 **M5 update (2026-11-18): both files shipped.** `Dockerfile` (multi-stage, jar-only
@@ -206,11 +227,72 @@ runtime, kit fixtures baked in, `DB_URL` points at `/app/data`) and
 read-only over the baked copies, `depends_on` the receiver). Image build/verify was
 blocked on the day: Docker Desktop daemon not running (client 29.6.2 present, `docker
 info` fails) — configs are in place, runtime verification pending daemon availability.
+**Release verification (2026-11-18, later the same day): runtime verification completed.**
+Daemon back up; both images built and both containers run via
+`docker compose -f docker-compose.yml -f docker-compose.app.yml up --build -d` (app on host
+8090 via the documented `PORT_APP` override — an unrelated process held 8080; receiver on
+9900). Kit imported idempotently; the full publication journey, webhook deliveries,
+restart and volume-retention checks verified live — details in [PROGRESS.md](PROGRESS.md),
+Release verification. Deployment scope: local Docker Compose only (no public cloud
+deployment).
 
 **B-10 — Frontend = static vanilla JS page served from the Boot jar.** Pages: Publish
 (upload + findings + ack/override dialog with enforced non-blank justification), Registry,
 Consumers (+ impact matrix), Audit, Diff tool. No build chain; resources under
 `src/main/resources/static`. Cut-first item if time runs short.
+**As-built (M4/M5):** shipped as one single-page app with those views plus the
+c634b69-era additions — attempts with allowed actions, migration guide, history, changelog,
+audit trail, metrics and the notifications log; the cut-first clause was never needed.
+
+**B-11 — CI gate = run the real policy as a dry-run, with a strict exit-code contract**
+(shipped `c634b69`, `scripts/ci-check.sh`). Context: the pipeline needs an answer to "would
+this candidate damage a registered consumer?" without a second evaluation implementation.
+Choice: the script builds the same JSON upload body the API expects and calls
+`POST /api/services/{slug}/check` (dry-run — nothing stored), then maps the decision to
+exit codes: `0` PUBLISH, or PENDING_ACK without `--strict` (breaking but zero AFFECTED — a
+human still acknowledges the real publish); `1` BLOCKED (and PENDING_ACK under `--strict`);
+`2` HTTP 422 invalid spec; `3` operational failure (unreachable server, non-JSON, unexpected
+status); `4` usage error. Interpreter discovery (`python3` → `python`) keeps it portable to
+Windows runners. Alternatives rejected: a separate CLI re-implementing the rules (two sources
+of truth) or parsing spec files locally (no registry, no consumers). Consequence: CI shares
+the exact gate semantics with the registry; findings printed in the log name affected
+consumers directly.
+
+**B-12 — Decision transitions are state-guarded inside the transaction** (hardening,
+`5abfc3b`). Context: two concurrent decisions on one attempt (double-click acknowledge, race
+between acknowledge and override) must not both apply. Choice: the transition `UPDATE` is
+guarded by the expected previous state within the same transaction as its transition row,
+finding/impact writes and audit event; a lost race rolls back entirely and surfaces as `409`
+("attempt was decided concurrently"). Metrics/audit reads run per-statement
+`READ_COMMITTED`. Alternative rejected: application-level locks (single-process assumption
+baked in; the DB already provides the primitive). Consequence: no half-decided attempts;
+verified by `PersistenceGuaranteesIntegrationTest`.
+
+**B-13 — Parameter serialization deviations are recorded as `x-serialization` envelopes**
+(`93ceeff`). Context: engine review found that `style`/`explode`/`allowReserved` change how a
+value physically appears on the wire (`;id=3` vs `/3`, `?ids=1&ids=2` vs `?ids=1,2`) yet were
+invisible to the diff. Choice: the extractor records **only deviations from the OpenAPI 3.0
+defaults** (query/cookie → `form`+explode-true; path/header → `simple`+explode-false;
+`allowReserved` query-only, default false) under the envelope key `x-serialization`; spelled-out
+defaults therefore produce byte-identical envelopes (wire-neutral, zero findings). The engine
+emits `PARAM.SERIALIZATION_CHANGED`: style change → BREAKING (always alters the wire format);
+explode change → BREAKING for array/object parameters, INFO for single-valued ones; explode is
+compared only when both sides share the same style (a style flip already covers the wire
+change); `allowReserved` disabled → BREAKING, enabled → INFO. Impact: declared senders →
+AFFECTED on breaking changes, NONE otherwise. Alternatives rejected: recording every
+attribute verbatim (makes explicit-default specs look changed — false positives), or ignoring
+the attributes again (the original gap). Consequence: a kit of 12 specs with none of these
+attributes is unaffected (grep-verified); synthetic tests pin the semantics.
+
+**B-14 — Migration guides are generated only from stored findings + impacts** (shipped
+`c634b69`, `MigrationGuide`). Choice: no fabrication — every step quotes a persisted finding
+(code, location, field path) mapped to a concrete action, with affected consumer names taken
+from the stored impact rows and parameter names restored from the spec's parameter index;
+codes without a template degrade to a review step quoting the finding's own detail.
+Alternative rejected: generating steps from the *incoming* spec at read time (could drift from
+what was actually decided and audited). Consequence: the guide is reproducible from the audit
+record alone, and a new finding code (e.g. `PARAM.SERIALIZATION_CHANGED`) can never produce an
+invented step — worst case it gets the honest review step.
 
 ## C. Fact ledger (reconnaissance + environment — treated as ground truth)
 
@@ -271,3 +353,24 @@ support (kit is local-only; depth guard documented); retry queues for webhooks; 
 definition versioning beyond active+history; OpenAPI 2.0 parsing; Spring Data JPA/Hibernate;
 springdoc/Swagger UI for our own API (optional cut-first); Testcontainers; GraalVM native
 images; Kotlin.
+
+## F. As-built outcome of the assumption ledger
+
+All assumptions were resolved by implementation or live verification (`93ceeff` era;
+evidence in [PROGRESS.md](PROGRESS.md)):
+
+| # | Outcome |
+|---|---|
+| A-01 (kit order) | confirmed — `KitSeeder` imports in filename order; per-file outcomes flow through the real gate |
+| A-05 (`x-internal`) | confirmed — internal op gated under rule 2, "internal" badge shown, no exemption |
+| A-06 (`x-sunset`) | confirmed — `SUNSET_PASSED` warn fires for the past-dated `legacyCode`; server-date semantics |
+| A-07 (no auth) | confirmed — justification + `X-Acting-User` attribution only; documented limitation |
+| A-08 (reads/sends semantics) | confirmed — plus the cumulative drift scan (A-08 update) shipped and verified live (`CONSUMER.DRIFT` on the stale mobile-app binding) |
+| A-10 (duplicate handling) | confirmed — rejection semantics shipped; identical re-upload audited as idempotent no-op |
+| A-11 (regression) | confirmed — 409 shipped (defensive; not exercised by the kit) |
+| A-12 (entry points) | **partially superseded** — API upload + startup import shipped; the `/admin/import-kit` endpoint was replaced by `KitSeeder` (A-10 as-built note) |
+| A-13 (`RESPONSE_ADDED` info) | confirmed — claims `202` is informational |
+| A-14 (webhook targets) | confirmed — `WEBHOOK_URL` env, both defaults verified live |
+| A-15 (`JAVA_HOME` override) | confirmed — used throughout; Docker build path env-independent |
+| A-16 (Jackson 3 YAML artifact) | confirmed — Boot 4 BOM manages it; no SnakeYAML fallback needed |
+| A-17 (network access) | confirmed — builds and image pulls ran on the day |

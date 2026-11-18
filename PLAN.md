@@ -1,6 +1,10 @@
 # Contract Guard — Architecture & Implementation Plan (Java / Spring Boot revision)
 
-Status: design only (no application code written yet). Revision R2: technology stack switched
+Status: **historical plan (kept verbatim)** — the requirements in this document were
+implemented and shipped; see §13 (As-built status) for the requirement-by-requirement
+audit against the final code (`93ceeff`), [PROGRESS.md](PROGRESS.md) for the build journey,
+and [REVIEW.md](REVIEW.md) for the engineering review of what shipped. Revision R2:
+technology stack switched
 from Python/FastAPI to **Java 17 + Spring Boot** per team decision; product decisions,
 compatibility rules, consumer impact model, publishing state machine, database concepts, API
 design and test scenarios are unchanged from R1. Grounded in the reconnaissance of the actual
@@ -494,3 +498,94 @@ plus mandatory justification (no auth system); webhook target configurable, defa
 receiver (localhost:9900 local / `webhook-receiver:9000` in Compose); "today" for `x-sunset`
 comparisons is server date (legacyCode sunset 2026-11-01 already past at time of writing);
 JAVA_HOME may be overridden per-session to Temurin 21 for Maven (A-15).
+
+---
+
+## 13. As-built status (audited against the final code, commit `93ceeff`)
+
+Everything above is the original plan, kept verbatim. This section records what actually
+shipped, requirement by requirement, with the deltas explained — nothing was retro-fitted
+into the plan text to make it look prescient. Detailed evidence lives in
+[PROGRESS.md](PROGRESS.md); decision rationale in [DECISIONS.md](DECISIONS.md).
+
+### 13.1 Headline result
+
+| Plan intent | As-built |
+|---|---|
+| 5-rule publishing policy, semver advisory-only | ✅ shipped exactly as planned (`PublishingDecision`, `VersionPolicyAnalyzer` in a separate channel) |
+| Effective-contract comparison, asymmetry rules | ✅ shipped as planned, then hardened in `5abfc3b` and extended with parameter serialization in `93ceeff` |
+| Registry + attempts + audit + notifications | ✅ shipped as planned (schema superset of §4) |
+| Docker Compose via override file, kit untouched | ✅ shipped as planned (`docker-compose.app.yml` + multi-stage `Dockerfile`) |
+| 144 automated tests, live-verified local deployment | ✅ final state (139 at `5abfc3b`, +5 at `93ceeff`) |
+
+### 13.2 Requirement-by-requirement audit
+
+| Planned (§ reference) | Status | As-built notes |
+|---|---|---|
+| Stack: Java 17 / Boot 4.1.2 / Maven / Swagger Parser 2.1.48 / Jackson 3 / H2 + JdbcTemplate / vanilla UI / RestClient (§1.2) | ✅ shipped | exactly the chosen versions; two Jackson generations coexist as designed (B-10) |
+| Environment remediation JAVA_HOME→21 (§1.3) | ✅ applied | every Maven invocation used the documented env fix |
+| Modular monolith, pure-Java core packages (§2) | ✅ shipped | `specs`/`compatibility`/`consumers`/`impact`/`policy` carry no Spring annotations or I/O; an `audit` package never became a separate module — audit writes live in `RegistryStore` + `PublicationService` (append-only tables), as §4 already implied |
+| Collect-all validation incl. every local `$ref` (§3.3, §9) | ✅ shipped + test verified | `StructuralValidator` walks the document; one broken upload returns the complete diagnosis |
+| Duplicate identical no-op / duplicate-differs 409 / regression 409 (§3.4) | ✅ shipped + live verified | identical re-upload audited as `SPEC_DUPLICATE_IDENTICAL` no-op |
+| Canonicalization & effective schemas, cycles (§3.5, §6) | ✅ shipped | `$ref` inlining everywhere incl. parameters/bodies/responses; `x-circular` marker, depth cap 50; `x-content` media-type params added in `5abfc3b` |
+| Diff rule catalog §6 | ✅ shipped + test verified | all planned codes implemented with the planned severities; two corrections below (§13.3) |
+| Version-policy findings, never gating (§3.7, §6) | ✅ shipped + test verified | `VERSION.POLICY.BREAKING_WITHOUT_MAJOR` (warn), `MAJOR_WITHOUT_BREAKING` (info), `VERSION.UNPARSEABLE` (info note) |
+| Deprecation / x-sunset scan (§3.8, §6) | ✅ shipped + test verified | `DEPRECATION.ADDED`, `SUNSET_PASSED` (warn), `SUNSET_SCHEDULED` (info) |
+| Consumer parsing, path-shape matching, field-path semantics (§7) | ✅ shipped + test verified | placeholder positions, prefix + `[]` matching exactly as specified |
+| Impact tiers AFFECTED/POSSIBLE/NONE with evidence (§7) | ✅ shipped + live verified | per-row reasons, gate mapping as planned |
+| State machine + override + justification 422 (§8) | ✅ shipped + live verified | transitions state-guarded in-transaction (concurrency hardening in `5abfc3b` — two simultaneous decisions cannot both apply) |
+| Audit transitions + audit events, filterable (§4, §5) | ✅ shipped + live verified | 27 events observed live; `audit_events` table added beyond §4's sketch |
+| Webhooks fire-and-forget, kit receiver untouched (§8) | ✅ shipped + live verified | kinds `published` / `overridden_published` / `blocked`; **no retry** (plan said "one retry" — dropped during implementation, see §13.3) |
+| `POST /admin/import-kit` (§3, §5, §10) | 🔁 replaced by `KitSeeder` | idempotent startup import through the real pipeline (`KIT_IMPORT=true`, audit marker); no admin endpoint shipped — one less privileged surface |
+| Dry-run: `GET /diff/{slug}?from=&to=` (§3, §5) | 🔁 reshaped | shipped as `POST /api/services/{slug}/check` (evaluate a candidate without storing) **and** `GET /api/services/{slug}/compare?from=&to=` (diff two registered versions) |
+| `POST /consumers` re-upload (§5) | ❌ cut (A-08) | startup YAML loading only; documented scope cut |
+| REST surface paths (§5) | 🔁 renamed | `/api/…` prefix throughout; JSON-body upload `{"yaml","filename"}` instead of multipart; endpoints listed authoritatively in README §11 |
+| Error body `{"error": {code, message, details}}` (§5) | 🔁 simplified | flat `{"error": "message"}`; invalid specs additionally return the full error list + audit attempt id under 422 |
+| Schema: attempts start `received`, may end `failed` (§4) | 🔁 nuance | attempts are inserted directly with their decided state (`auto_published`/`pending_ack`/`blocked`/`rejected`); `received`/`failed` remain legal schema values but the shipped pipeline never writes them |
+| DB entities §4 | ✅ shipped | superset of the sketch (adds `audit_events`, `decision_json`, idempotent `ALTER TABLE` migrations); `consumer_definitions` re-upload semantics unused after the A-08 cut |
+| Test plan §10 | ✅ shipped | unit + `@SpringBootTest`/MockMvc over in-memory H2; the acceptance matrix ran as the live release verification (§13.4) |
+| Five-hour schedule §11 | ✅ met in substance | the whole build landed on 2026-11-18 in eight commits over ~3 hours of wall-clock commits (17:22–20:12), with the planned cut list never needed — rename heuristic, dry-run, webhooks and UI all shipped |
+| Assumptions §12 | ✅ held | slug rule, duplicate policy, `x-internal` badge-only, no-auth override authority, server-date `x-sunset`, UTF-8 build — all as assumed |
+
+### 13.3 Corrections to the plan discovered during implementation
+
+- **Webhook retry**: plan §8 said "one retry". Shipped behavior is a **single** delivery
+  attempt (2 s connect/read timeouts) — the retry was dropped when it became clear a failed
+  delivery is recorded in `notifications` anyway and the publication is already committed.
+- **Error contract**: the planned nested `{code, message, details}` body shipped as the flat
+  `{"error": "message"}` (simpler for both the dashboard and curl); invalid-spec responses
+  carry the collected error list + attempt id as planned.
+- **`/admin/import-kit`**: replaced by the startup `KitSeeder` — same idempotence goals, no
+  extra privileged endpoint.
+- **Parameter serialization** (`style`/`explode`/`allowReserved`): absent from the plan
+  entirely — the wire-format impact of these attributes was recognized during the release
+  engine review and implemented in `93ceeff` (`x-serialization` envelopes,
+  `PARAM.SERIALIZATION_CHANGED`).
+- **oneOf exclusivity**: the plan's rule catalog treats compositions as alternative sets;
+  the shipped engine documents that exclusivity itself is *not* interpreted (limitation,
+  not a regression of the plan).
+
+### 13.4 Acceptance matrix — planned vs actual kit import
+
+Plan §10 expected the kit import to produce, per service: quote {auto, auto, blocked,
+published-after-override}, policy {auto, warn-only, blocked(payments),
+blocked(partner)+version violation}, claims {rejected($ref), published, dup-idempotent,
+blocked(mobile)}.
+
+Actual fresh import (verified live, before any manual attempt): **12 attempts — 6
+`auto_published`, 5 `blocked`, 1 `rejected`** (the broken-`$ref` claims file); 3 services
+registered, 4 consumer files loaded. The five blocked attempts correspond to the planted
+consumer-impacting changes (quote rename, policy `legacyCode`/`phone`/endorsement rules,
+claims `amountApproved` guarantee removal); the planned per-file narrative differs in the
+details (e.g. the deprecated-fields policy version gates via `REQ.ENUM_NARROWED` rather than
+publishing warn-only, and quote 2.1.0 blocks on the stale-binding drift path instead of
+auto-publishing) but the overall shape — safe changes publish, planted breaking changes
+block, the invalid spec rejects — matched the plan's exit criteria. The
+`published-after-override` and ack journeys were verified live in release verification
+([PROGRESS.md](PROGRESS.md), Release verification).
+
+### 13.5 Explicitly not shipped (documented scope)
+
+- Self-service consumer registration API / dashboard upload (A-08 cut).
+- Authentication / RBAC — `X-Acting-User` is attribution only (A-07).
+- Public cloud deployment — verification is local Docker Compose only.
