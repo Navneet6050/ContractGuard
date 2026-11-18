@@ -1,0 +1,139 @@
+﻿{
+  "info": {
+    "id": "ses_1edfb5917ffetnZMjv2ufhxQon",
+    "slug": "shiny-cactus",
+    "projectID": "global",
+    "directory": "C:/Windows/System32",
+    "path": "Windows/System32",
+    "title": "New session - 2026-05-10T13:12:35.305Z",
+    "agent": "build",
+    "model": {
+      "id": "minimax-m2.5-free",
+      "providerID": "opencode"
+    },
+    "version": "1.14.46",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "time": {
+      "created": 1778418755305,
+      "updated": 1778418758079
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1778418755343
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "opencode",
+          "modelID": "minimax-m2.5-free"
+        },
+        "summary": {
+          "diffs": []
+        },
+        "id": "msg_e1204a6f900104pdtdqCG5hbVC",
+        "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "hii",
+          "id": "prt_e1204a6fa001ZuwqvkRgM31fWi",
+          "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon",
+          "messageID": "msg_e1204a6f900104pdtdqCG5hbVC"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_e1204a6f900104pdtdqCG5hbVC",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "C:\\Windows\\System32",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 11173,
+          "input": 9295,
+          "output": 86,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 1792
+          }
+        },
+        "modelID": "minimax-m2.5-free",
+        "providerID": "opencode",
+        "time": {
+          "created": 1778418755375,
+          "completed": 1778418758070
+        },
+        "finish": "stop",
+        "id": "msg_e1204a72f001zt5SeQTTOXQi9Z",
+        "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_e1204af8a00147JrxsjGjLvcEa",
+          "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon",
+          "messageID": "msg_e1204a72f001zt5SeQTTOXQi9Z"
+        },
+        {
+          "type": "reasoning",
+          "text": "The user just said \"hii\" which is a greeting. According to my instructions, I should be concise and direct. I should respond briefly without being overly friendly or verbose.\n\nLooking at the instructions, I should avoid:\n- Unnecessary preamble or postamble\n- Being too verbose\n- Using emojis unless asked\n\nI should just give a simple, brief response.\n",
+          "time": {
+            "start": 1778418757517,
+            "end": 1778418757931
+          },
+          "metadata": {
+            "anthropic": {
+              "signature": ""
+            }
+          },
+          "id": "prt_e1204af8d0014fVVWdlAaNcLlp",
+          "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon",
+          "messageID": "msg_e1204a72f001zt5SeQTTOXQi9Z"
+        },
+        {
+          "type": "text",
+          "text": "\n\nHi! How can I help you today?",
+          "time": {
+            "start": 1778418757934,
+            "end": 1778418757978
+          },
+          "id": "prt_e1204b12d001LNGtyBKYouEjUy",
+          "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon",
+          "messageID": "msg_e1204a72f001zt5SeQTTOXQi9Z"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 11173,
+            "input": 9295,
+            "output": 86,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 1792
+            }
+          },
+          "cost": 0,
+          "id": "prt_e1204b1b0001RXOnmX89DjF6Vu",
+          "sessionID": "ses_1edfb5917ffetnZMjv2ufhxQon",
+          "messageID": "msg_e1204a72f001zt5SeQTTOXQi9Z"
+        }
+      ]
+    }
+  ]
+}

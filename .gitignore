@@ -1,0 +1,26 @@
+# Build output
+target/
+*.class
+dependency-reduced-pom.xml
+.flattened-pom.xml
+
+# H2 database files (runtime state, never committed)
+data/
+*.mv.db
+*.trace.db
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

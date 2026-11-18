@@ -1,0 +1,23 @@
+server:
+  port: ${PORT_APP:8000}
+
+spring:
+  application:
+    name: contractguard
+  datasource:
+    url: jdbc:h2:file:./data/contractguard
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+
+contractguard:
+  # Untouched starter-kit webhook receiver (Python, stdlib). Inside Docker Compose this
+  # must point at the service name; locally it is the published host port.
+  webhook-url: ${WEBHOOK_URL:http://localhost:9900/contractguard}
+
+logging:
+  level:
+    com.contractguard: INFO

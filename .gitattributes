@@ -1,0 +1,2 @@
+# Preserve every file byte-for-byte (starter-kit fixtures must never be EOL-converted).
+* -text
