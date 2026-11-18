@@ -7,18 +7,18 @@ import java.nio.file.Path;
 /**
  * Test helper: reads the read-only starter-kit fixtures from the repository root
  * (Maven surefire runs with the module directory as the working directory). Fixtures
- * are never modified by tests.
+ * are never modified by tests. Shared by specs and compatibility test packages.
  */
-final class Fixtures {
+public final class Fixtures {
 
     private Fixtures() {
     }
 
-    static String spec(String service, String file) {
+    public static String spec(String service, String file) {
         return read(Path.of("specs", service, file));
     }
 
-    static String consumer(String file) {
+    public static String consumer(String file) {
         return read(Path.of("consumers", file));
     }
 

@@ -37,7 +37,8 @@ public class SpecParser {
             throw new SpecParseException(errors);
         }
 
-        Map<String, String> effective = new EffectiveSchemaExtractor(root).extract();
+        EffectiveSchemaExtractor extractor = new EffectiveSchemaExtractor(root);
+        Map<String, String> effective = extractor.extract();
         String canonicalJson = buildCanonicalJson(root);
         List<DeprecationRecord> deprecations = new DeprecationScanner(root).scan();
 
@@ -47,6 +48,7 @@ public class SpecParser {
                 root.get("info").get("version").textValue(),
                 canonicalJson,
                 effective,
+                extractor.getPathAliases(),
                 deprecations,
                 null);
     }

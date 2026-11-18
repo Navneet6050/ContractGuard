@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -16,14 +17,21 @@ import tools.jackson.databind.node.ObjectNode;
  * wire contract is the same.
  *
  * Scopes: "requestBody:<mediaType>", "param:<in>:<ordinal>" (one entry per parameter
- * position; OAS override rules honored), "response:<status>[:<mediaType>]" (a documented
- * status without a schema is recorded as the literal "null").
+ * position; OAS override rules honored; the value is an envelope
+ * {"required": bool, "schema": <expanded schema|null>} — the parameter NAME is
+ * deliberately excluded so that renaming a parameter does not change the wire shape),
+ * "response:<status>[:<mediaType>]" (a documented status without a schema is recorded
+ * as the literal "null").
+ *
+ * Also collects a pathShape → rawPath alias map (first raw path wins) so findings can
+ * display the human path while matching stays shape-based.
  */
 final class EffectiveSchemaExtractor {
 
     private static final int MAX_EXPANSION_DEPTH = 50;
 
     private final JsonNode root;
+    private final Map<String, String> pathAliases = new TreeMap<>();
 
     EffectiveSchemaExtractor(JsonNode root) {
         this.root = root;
@@ -42,6 +50,7 @@ final class EffectiveSchemaExtractor {
                 continue;
             }
             String pathShape = PathShapes.normalize(rawPath);
+            pathAliases.putIfAbsent(pathShape, rawPath);
             // path-level parameters apply to every operation unless overridden
             List<JsonNode> pathLevelParams = parameterList(pathItem.get("parameters"));
 
@@ -81,8 +90,11 @@ final class EffectiveSchemaExtractor {
             }
             String scope = "param:" + in + ":" + counters.merge(in, 1, Integer::sum);
             JsonNode schema = param.get("schema");
+            ObjectNode envelope = JsonNodeFactory.instance.objectNode();
+            envelope.put("required", requiredFlag(param));
+            envelope.set("schema", schema != null ? expandNode(schema, 0) : JsonNodeFactory.instance.nullNode());
             out.put(new EffectiveLocation(verb, pathShape, scope).key(),
-                    expand(schema != null ? schema : param));
+                    JsonMappers.writeCanonical(CanonicalJson.canonicalize(envelope)));
         }
 
         // --- request body ---
@@ -226,5 +238,15 @@ final class EffectiveSchemaExtractor {
         }
         JsonNode value = node.get(field);
         return value != null && value.isString() ? value.stringValue() : null;
+    }
+
+    private static boolean requiredFlag(JsonNode param) {
+        JsonNode required = param.get("required");
+        return required != null && required.isBoolean() && required.booleanValue();
+    }
+
+    /** pathShape → first raw path template seen at that shape. */
+    Map<String, String> getPathAliases() {
+        return Map.copyOf(pathAliases);
     }
 }
