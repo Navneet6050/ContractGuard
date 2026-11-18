@@ -74,6 +74,16 @@ active definition at attempt time. ⚠️ Assumption: `reads` = hard dependency 
 removal), `sends` = declared fields (absence ⇒ affected by `REQUIRED_ADDED`); enum values
 sent are not recorded ⇒ `REQ.ENUM_NARROWED` conservatively affects all bound consumers
 with an explicit caveat (partner-portal + `VEHICLE`).
+**M5 update (2026-11-18):** the kit format has NO version field, so no pinning was
+invented. The "which older versions are consumers still using?" question is answered by
+the explicitly defined default **cumulative consumer-drift scan**
+(`ConsumerDriftScanner`): every declared read/send/operation binding is checked against
+the INCOMING spec on every upload/check, so usage removed by an already-published
+version (e.g. mobile-app's `premium.breakdown[].amount` after quote 2.0.0) still
+produces a non-gating `CONSUMER.DRIFT` / `CONSUMER.STALE_BINDING` warn finding naming
+the consumers, POSSIBLE-tier impacts, a migration-guide step and a metrics entry.
+Drift explained by the current→candidate delta (this hop's removal/rename) is
+suppressed to avoid double-reporting. Drift never changes the gate decision.
 
 **A-09 — Impact tiers: AFFECTED gates, POSSIBLE warns, NONE clears.**
 Context: consumers can't declare "I match exhaustively on status". Choice:
@@ -189,6 +199,13 @@ Receiver keeps in-memory state (documented limitation: restart clears notificati
 retry; failures logged, never block publishing. Dockerfile is multi-stage
 (`maven:3.9-eclipse-temurin-21` → `eclipse-temurin:21-jre`); fallback for slow first image
 builds: slim Dockerfile copying a locally built jar.
+**M5 update (2026-11-18): both files shipped.** `Dockerfile` (multi-stage, jar-only
+runtime, kit fixtures baked in, `DB_URL` points at `/app/data`) and
+`docker-compose.app.yml` (service name `contract-guard`, named volume
+`contractguard-data` for restart persistence, repo `specs/`+`consumers/` mounted
+read-only over the baked copies, `depends_on` the receiver). Image build/verify was
+blocked on the day: Docker Desktop daemon not running (client 29.6.2 present, `docker
+info` fails) — configs are in place, runtime verification pending daemon availability.
 
 **B-10 — Frontend = static vanilla JS page served from the Boot jar.** Pages: Publish
 (upload + findings + ack/override dialog with enforced non-blank justification), Registry,

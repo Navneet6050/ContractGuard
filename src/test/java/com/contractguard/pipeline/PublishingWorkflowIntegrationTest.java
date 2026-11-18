@@ -434,6 +434,31 @@ class PublishingWorkflowIntegrationTest {
                         .contentType("application/json")
                         .content("{\"justification\": \"again\"}"))
                 .andExpect(status().isBadRequest());
+
+        // cumulative consumer-drift scan: with 2.0.0 published (via the override), the
+        // later 2.1.0 upload still warns that mobile-app's declaration references a field
+        // that no longer exists — advisory only, so the upload still auto-publishes
+        MvcResult next = mockMvc.perform(post("/api/services/quote-api/specs")
+                        .contentType("application/json")
+                        .content(uploadBody(Fixtures.spec("quote-api", "4-ncb-and-taxes.yaml"),
+                                "4-ncb-and-taxes.yaml")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("auto_published"))
+                .andExpect(jsonPath("$.decision").value("PUBLISH"))
+                .andReturn();
+        String driftBody = next.getResponse().getContentAsString();
+        assertThat(driftBody).contains("CONSUMER.DRIFT").contains("premium.breakdown[].amount")
+                .contains("mobile-app");
+
+        // migration guide for the blocked attempt: grounded in the stored findings
+        MvcResult guide = mockMvc.perform(get("/api/attempts/" + attemptId + "/migration-guide"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.steps", hasSize(greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.steps[*].code", hasItem("RESP.PROPERTY_RENAMED")))
+                .andReturn();
+        String guideBody = guide.getResponse().getContentAsString();
+        assertThat(guideBody).contains("premium.breakdown[].amount")
+                .contains("mobile-app (AFFECTED)").contains("Update readers");
     }
 
     @Test
@@ -513,5 +538,23 @@ class PublishingWorkflowIntegrationTest {
         mockMvc.perform(get("/api/services/widget-api/versions"))
                 .andExpect(jsonPath("$.length()").value(3)) // 1.0.0, 1.1.0, 2.0.0 — no 2.1.0
                 .andExpect(jsonPath("$[*].version", hasItem("2.0.0")));
+    }
+
+    @Test
+    @Order(12)
+    @DisplayName("metrics aggregate the whole workflow from real rows")
+    void metrics() throws Exception {
+        MvcResult out = mockMvc.perform(get("/api/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.services").value(2))
+                .andExpect(jsonPath("$.breakingFindingsTotal", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.affectedConsumerImpacts", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.blockedPublications", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.overrides", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.rejections", greaterThanOrEqualTo(2)))
+                .andExpect(jsonPath("$.webhookNotificationsTotal", greaterThanOrEqualTo(1)))
+                .andReturn();
+        String body = out.getResponse().getContentAsString();
+        assertThat(body).contains("\"mobile-app\"").contains("overridden_published");
     }
 }

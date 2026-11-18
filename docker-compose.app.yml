@@ -1,0 +1,35 @@
+# Contract Guard application override (DECISIONS.md B-09).
+#
+# The original docker-compose.yml defines only the starter-kit webhook receiver and
+# stays untouched. This override ADDS the Contract Guard application and wires the
+# webhook loop between the two containers.
+#
+# Start everything:   docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
+# App UI:             http://localhost:8080        (override host port with PORT_APP)
+# Receiver inbox:     http://localhost:9900        (override with WEBHOOK_PORT)
+#
+# Registry data persists across container restarts in the named volume
+# `contractguard-data` (mounted at /app/data); delete it for a fresh demo database:
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml down -v
+services:
+  contract-guard:
+    build: .
+    environment:
+      PORT_APP: "8080"
+      # inside the compose network the receiver is reachable by service name
+      WEBHOOK_URL: http://webhook-receiver:9000/contractguard
+      DB_URL: jdbc:h2:file:/app/data/contractguard
+      # the repository copies win over the image-baked fixtures (same files)
+      SPECS_DIR: /kit/specs
+      CONSUMERS_DIR: /kit/consumers
+      KIT_IMPORT: "true"
+    ports: ["${PORT_APP:-8080}:8080"]
+    volumes:
+      - contractguard-data:/app/data
+      - ./specs:/kit/specs:ro
+      - ./consumers:/kit/consumers:ro
+    depends_on:
+      - webhook-receiver
+
+volumes:
+  contractguard-data:

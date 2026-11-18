@@ -58,9 +58,11 @@ public class PublicationService {
     private final RegistryStore store;
     private final SpecParser specParser;
     private final CompatibilityEngine engine = new CompatibilityEngine();
+    private final VersionPolicyAnalyzer versionPolicy = new VersionPolicyAnalyzer();
     private final com.contractguard.impact.ConsumerImpactAnalyzer impactAnalyzer =
             new com.contractguard.impact.ConsumerImpactAnalyzer();
-    private final VersionPolicyAnalyzer versionPolicy = new VersionPolicyAnalyzer();
+    private final com.contractguard.impact.ConsumerDriftScanner driftScanner =
+            new com.contractguard.impact.ConsumerDriftScanner();
     private final ConsumerRegistry consumerRegistry;
     private final WebhookNotifier notifier;
 
@@ -241,6 +243,9 @@ public class PublicationService {
         List<CompatibilityFinding> findings = engine.diff(oldDoc.getEffectiveSchemas(),
                 newDoc.getEffectiveSchemas(), oldDoc.getPathAliases(), newDoc.getPathAliases());
         findings = appendLifecycleFindings(findings, oldDoc, newDoc);
+        List<CompatibilityFinding> withDrift = new ArrayList<>(findings);
+        withDrift.addAll(driftScanner.scan(slug, oldDoc, newDoc, consumerRegistry.all(), findings));
+        findings = withDrift;
         com.contractguard.impact.ImpactSummary summary = impactAnalyzer.analyze(slug, oldDoc,
                 newDoc, findings, consumerRegistry.all());
         List<PolicyFinding> policyFindings = versionPolicy.analyze(fromVersion, toVersion,
@@ -328,6 +333,13 @@ public class PublicationService {
                     newDoc.getEffectiveSchemas(), oldDoc.getPathAliases(), newDoc.getPathAliases()));
             findings = appendLifecycleFindings(findings, oldDoc, newDoc);
         }
+        // cumulative consumer-drift scan (A-08 default): declared usage that no longer
+        // exists in the incoming spec, regardless of WHICH published version removed it;
+        // drift already explained by this hop's delta findings is suppressed
+        List<CompatibilityFinding> withDrift = new ArrayList<>(findings);
+        withDrift.addAll(driftScanner.scan(slug, current == null ? null : oldDoc, newDoc,
+                consumerRegistry.all(), findings));
+        findings = withDrift;
         com.contractguard.impact.ImpactSummary summary = impactAnalyzer.analyze(slug, oldDoc,
                 newDoc, findings, consumerRegistry.all());
         String previousVersion = current == null ? null : current.version();
@@ -369,6 +381,44 @@ public class PublicationService {
             });
         }
         return findings;
+    }
+
+    // ------------------------------------------------------------------ migration guide
+
+    /**
+     * Migration guide for one attempt, generated from its STORED findings and impacts
+     * only. Parameter names are restored by re-parsing the attempt's raw YAML (the
+     * engine's finding envelopes deliberately omit them); a parse failure degrades to an
+     * index without parameter names — actions stay grounded either way.
+     */
+    public Map<String, Object> migrationGuide(long attemptId) {
+        RegistryStore.AttemptRow attempt = requireAttempt(attemptId);
+        String slug = store.serviceSlug(attempt.serviceId()).orElse("(unknown)");
+        List<RegistryStore.StoredFinding> findings = store.findingsForAttempt(attempt.id());
+        Map<Long, List<RegistryStore.StoredImpact>> impactsByFinding = new LinkedHashMap<>();
+        for (RegistryStore.StoredImpact impact : store.impactsForAttempt(attempt.id())) {
+            impactsByFinding.computeIfAbsent(impact.findingId(), k -> new ArrayList<>()).add(impact);
+        }
+        Map<String, String> paramNames = paramIndexSafely(attempt.rawYaml());
+        List<MigrationGuide.Step> steps = MigrationGuide.build(findings, impactsByFinding, paramNames);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("service", slug);
+        out.put("version", attempt.incomingVersion());
+        out.put("state", attempt.state());
+        out.put("steps", steps.stream().map(MigrationGuide.Step::view).toList());
+        out.put("note", steps.isEmpty()
+                ? "no compatibility findings for this attempt - no migration required"
+                : "generated from the attempt's stored findings; consumers are named from the"
+                        + " stored impact analysis");
+        return out;
+    }
+
+    private Map<String, String> paramIndexSafely(String rawYaml) {
+        try {
+            return specParser.parse(rawYaml).getParamNames();
+        } catch (RuntimeException e) {
+            return Map.of();
+        }
     }
 
     // ------------------------------------------------------------------ views (API payloads)
@@ -586,6 +636,9 @@ public class PublicationService {
                     "warn", countSeverity(findings, "warn"),
                     "info", countSeverity(findings, "info")));
             entry.put("compatibilityChanges", changes);
+            entry.put("migration", MigrationGuide.build(findings, impactsByFinding,
+                    paramIndexSafely(row.rawYaml())).stream()
+                    .map(MigrationGuide.Step::view).toList());
             entry.put("policyWarnings", decision == null ? List.of()
                     : findingListOf(decision, "policyFindings"));
             entry.put("affectedConsumers", affected);

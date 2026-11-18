@@ -3,7 +3,9 @@ package com.contractguard.persistence;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -501,6 +503,77 @@ public class RegistryStore {
                         rs.getString("target_url"), rs.getString("status"),
                         toInstant(rs.getTimestamp("created_at")),
                         toInstant(rs.getTimestamp("delivered_at"))));
+    }
+
+    // ------------------------------------------------------------------ metrics
+
+    /** Aggregated registry/workflow metrics (all from real rows; no sampling). */
+    public Map<String, Object> metrics() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("services", scalar("SELECT COUNT(*) FROM services"));
+        out.put("publishedVersions", scalar(
+                "SELECT COUNT(*) FROM spec_versions WHERE state = 'published'"));
+        out.put("supersededVersions", scalar(
+                "SELECT COUNT(*) FROM spec_versions WHERE state = 'superseded'"));
+
+        Map<String, Integer> attemptsByState = new LinkedHashMap<>();
+        jdbc.query("""
+                        SELECT state, COUNT(*) AS n FROM publication_attempts
+                        GROUP BY state ORDER BY state
+                        """,
+                rs -> {
+                    attemptsByState.put(rs.getString("state"), rs.getInt("n"));
+                });
+        out.put("publicationAttemptsByState", attemptsByState);
+        out.put("publicationAttemptsTotal", attemptsByState.values().stream()
+                .mapToInt(Integer::intValue).sum());
+
+        Map<String, Integer> findingsBySeverity = new LinkedHashMap<>();
+        jdbc.query("SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity ORDER BY severity",
+                rs -> {
+                    findingsBySeverity.put(rs.getString("severity"), rs.getInt("n"));
+                });
+        out.put("findingsBySeverity", findingsBySeverity);
+        out.put("breakingFindingsTotal", findingsBySeverity.getOrDefault("breaking", 0));
+
+        out.put("affectedConsumerImpacts", scalar(
+                "SELECT COUNT(*) FROM finding_impacts WHERE level = 'affected'"));
+
+        // consumers most often affected, most recent first (real impact rows only)
+        Map<String, Integer> topAffected = new LinkedHashMap<>();
+        jdbc.query("""
+                        SELECT consumer, COUNT(*) AS n FROM finding_impacts
+                        WHERE level = 'affected' GROUP BY consumer ORDER BY n DESC, consumer
+                        """,
+                rs -> {
+                    topAffected.put(rs.getString("consumer"), rs.getInt("n"));
+                });
+        out.put("affectedImpactsByConsumer", topAffected);
+
+        // outcome counts come from the audit trail (stable even after later
+        // transitions move attempts out of their original state)
+        out.put("blockedPublications", scalar(
+                "SELECT COUNT(*) FROM audit_events WHERE action = 'SPEC_UPLOADED' AND decision = 'blocked'"));
+        out.put("overrides", scalar(
+                "SELECT COUNT(*) FROM audit_events WHERE action = 'OVERRIDE'"));
+        out.put("rejections", scalar(
+                "SELECT COUNT(*) FROM audit_events WHERE action = 'SPEC_REJECTED'"));
+
+        Map<String, Integer> notificationsByStatus = new LinkedHashMap<>();
+        jdbc.query("SELECT status, COUNT(*) AS n FROM notifications GROUP BY status ORDER BY status",
+                rs -> {
+                    notificationsByStatus.put(rs.getString("status"), rs.getInt("n"));
+                });
+        out.put("webhookNotificationsByStatus", notificationsByStatus);
+        out.put("webhookNotificationsTotal", notificationsByStatus.values().stream()
+                .mapToInt(Integer::intValue).sum());
+        out.put("auditEvents", scalar("SELECT COUNT(*) FROM audit_events"));
+        return out;
+    }
+
+    private int scalar(String sql) {
+        Integer n = jdbc.query(sql, rs -> rs.next() ? rs.getInt(1) : 0);
+        return n == null ? 0 : n;
     }
 
     private static Instant toInstant(Timestamp timestamp) {

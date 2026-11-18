@@ -26,10 +26,10 @@
     .breaking { background: #d93025; color: #fff; }
     .warn { background: #f9ab00; color: #222; }
     .info { background: #188038; color: #fff; }
-    .state-auto_published, .state-published { background: #188038; color: #fff; }
+    .state-auto_published, .state-published, .state-PUBLISH, .state-publish { background: #188038; color: #fff; }
     .state-overridden_published { background: #7b1fa2; color: #fff; }
-    .state-pending_ack { background: #f9ab00; color: #222; }
-    .state-blocked { background: #d93025; color: #fff; }
+    .state-pending_ack, .state-PENDING_ACK { background: #f9ab00; color: #222; }
+    .state-blocked, .state-BLOCK, .state-block { background: #d93025; color: #fff; }
     .state-rejected, .state-abandoned { background: #666; color: #fff; }
     table { border-collapse: collapse; width: 100%; margin-top: 8px; }
     th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
@@ -124,6 +124,10 @@
     <div class="row">
       <div><button id="abandonBtn" class="secondary">Abandon attempt</button></div>
     </div>
+    <div class="row" style="margin-top:12px">
+      <div><button id="migrationGuideBtn" class="secondary">Migration guide for this attempt</button></div>
+    </div>
+    <div id="migrationOut" class="muted">No migration guide generated.</div>
   </div>
 
   <div class="card">
@@ -142,6 +146,12 @@
     <h2>Audit log</h2>
     <p><button id="loadAudit" class="secondary">Load audit trail</button></p>
     <div id="auditOut" class="muted">No audit events loaded.</div>
+  </div>
+
+  <div class="card">
+    <h2>Metrics</h2>
+    <p><button id="loadMetrics" class="secondary">Load metrics</button></p>
+    <div id="metricsOut" class="muted">No metrics loaded.</div>
   </div>
 
   <div class="card">
@@ -459,6 +469,36 @@
     document.getElementById('abandonBtn').addEventListener('click', () =>
       decisionAction('abandon', 'attemptOut', {}));
 
+    // ------------------------------------------------------- migration guide
+
+    document.getElementById('migrationGuideBtn').addEventListener('click', async () => {
+      const id = document.getElementById('attemptId').value.trim();
+      if (!id) {
+        document.getElementById('migrationOut').innerHTML =
+          '<p class="muted">Enter an attempt id first.</p>';
+        return;
+      }
+      const g = await callApi('/api/attempts/' + encodeURIComponent(id) + '/migration-guide',
+        { method: 'GET' }, 'migrationOut');
+      if (!g) return;
+      let html = '<p><b>' + esc(g.service) + '</b> ' + esc(g.version || '')
+        + ' — attempt state: ' + stateBadge(g.state) + '</p><p class="muted">' + esc(g.note) + '</p>';
+      if (!g.steps.length) {
+        document.getElementById('migrationOut').innerHTML = html;
+        return;
+      }
+      html += '<table><tr><th>Severity</th><th>Code</th><th>Location</th><th>Field</th><th>Action</th><th>Consumers</th></tr>';
+      for (const s of g.steps) {
+        html += '<tr><td>' + severityBadge(s.severity) + '</td><td><code>' + esc(s.code)
+          + '</code></td><td>' + esc(s.location) + '</td><td><code>' + esc(s.fieldPath)
+          + '</code></td><td>' + esc(s.action) + '</td><td>'
+          + (s.consumers.length ? esc(s.consumers.join(', ')) : '<span class="muted">—</span>')
+          + '</td></tr>';
+      }
+      html += '</table>';
+      document.getElementById('migrationOut').innerHTML = html;
+    });
+
     // ---------------------------------------------------------------- history
 
     document.getElementById('loadHistory').addEventListener('click', async () => {
@@ -562,6 +602,38 @@
           + esc(n.version || '—') + '</td><td class="muted">' + esc(n.targetUrl) + '</td><td>'
           + esc(n.status) + '</td><td><a href="#" onclick="alert(this.dataset.p);return false" data-p="'
           + esc(n.payloadJson).replace(/"/g, '&quot;') + '">view</a></td></tr>').join('') + '</table>';
+    });
+
+    // ---------------------------------------------------------------- metrics
+
+    document.getElementById('loadMetrics').addEventListener('click', async () => {
+      const m = await callApi('/api/metrics', { method: 'GET' }, 'metricsOut');
+      if (!m) return;
+      const mapToChips = (obj) => Object.entries(obj || {}).map(([k, v]) =>
+        '<span class="badge">' + esc(k) + ': <b>' + esc(String(v)) + '</b></span>').join(' ')
+        || '<span class="muted">none</span>';
+      let html = '<table>'
+        + '<tr><th>Services</th><td>' + esc(String(m.services)) + '</td></tr>'
+        + '<tr><th>Published / superseded versions</th><td>' + esc(String(m.publishedVersions))
+        + ' / ' + esc(String(m.supersededVersions)) + '</td></tr>'
+        + '<tr><th>Publication attempts (total)</th><td>' + esc(String(m.publicationAttemptsTotal))
+        + '</td></tr>'
+        + '<tr><th>Attempts by state</th><td>' + mapToChips(m.publicationAttemptsByState) + '</td></tr>'
+        + '<tr><th>Findings by severity</th><td>' + mapToChips(m.findingsBySeverity) + '</td></tr>'
+        + '<tr><th>Breaking findings (total)</th><td>' + esc(String(m.breakingFindingsTotal)) + '</td></tr>'
+        + '<tr><th>AFFECTED consumer impacts (total)</th><td>' + esc(String(m.affectedConsumerImpacts))
+        + '</td></tr>'
+        + '<tr><th>Impacts by consumer (AFFECTED)</th><td>' + mapToChips(m.affectedImpactsByConsumer)
+        + '</td></tr>'
+        + '<tr><th>Blocked / overridden / rejected publications</th><td>'
+        + esc(String(m.blockedPublications)) + ' / ' + esc(String(m.overrides)) + ' / '
+        + esc(String(m.rejections)) + '</td></tr>'
+        + '<tr><th>Webhook notifications by status</th><td>'
+        + mapToChips(m.webhookNotificationsByStatus) + ' (total ' + esc(String(m.webhookNotificationsTotal))
+        + ')</td></tr>'
+        + '<tr><th>Audit events</th><td>' + esc(String(m.auditEvents)) + '</td></tr>'
+        + '</table>';
+      document.getElementById('metricsOut').innerHTML = html;
     });
 
     // ---------------------------------------------------------------- standalone impact analysis (unchanged)

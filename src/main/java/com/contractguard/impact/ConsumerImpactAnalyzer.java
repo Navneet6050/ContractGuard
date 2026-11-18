@@ -128,6 +128,9 @@ public class ConsumerImpactAnalyzer {
             return Optional.empty();
         }
         boolean breaking = f.severity() == Severity.BREAKING;
+        if ("CONSUMERS".equalsIgnoreCase(f.scope())) {
+            return Optional.of(driftImpact(f, binding));
+        }
         if (!breaking) {
             return Optional.of(none(f, "informational change (" + f.detail()
                     + ") - non-breaking, no consumer impact"));
@@ -143,6 +146,34 @@ public class ConsumerImpactAnalyzer {
             default -> Optional.of(possible(f, "unhandled finding scope '" + f.scope()
                     + "' - manual review required"));
         };
+    }
+
+    // ------------------------------------------------------------------ consumer-drift findings
+
+    /**
+     * Findings from the {@link ConsumerDriftScanner} (scope {@code consumers:*}) are
+     * advisory by design: they name declarations that no longer match the incoming spec,
+     * which may be accepted history rather than damage from this candidate. The declared
+     * overlap proves the consumer still references the drifted element → POSSIBLE.
+     */
+    private FindingImpact driftImpact(CompatibilityFinding f, DeclaredOperation binding) {
+        if (f.fieldPath() == null || f.fieldPath().isBlank()) {
+            return possible(f, "you declare " + binding.display()
+                    + ", but the incoming spec contains no matching operation"
+                    + " (update or re-upload the consumer declaration)");
+        }
+        // the reads/sends kind is encoded in the finding's location (scope is CONSUMERS)
+        boolean reads = f.location() != null && f.location().contains("consumers:reads");
+        List<String> declared = reads ? binding.reads() : binding.sends();
+        String overlap = firstOverlap(declared, f.fieldPath(), null);
+        String kind = reads ? "read" : "send";
+        if (overlap != null) {
+            return possible(f, "you " + kind + " '" + overlap + "' on " + f.method() + " "
+                    + f.path() + ", which the incoming spec no longer documents"
+                    + " (declaration predates the current contract)");
+        }
+        return none(f, "no declared " + kind + " of '" + f.fieldPath() + "' on "
+                + f.method() + " " + f.path() + " — this drift concerns other consumers");
     }
 
     // ------------------------------------------------------------------ parameters

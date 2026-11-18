@@ -5,7 +5,9 @@ spring:
   application:
     name: contractguard
   datasource:
-    url: jdbc:h2:file:./data/contractguard
+    # File DB relative to the working directory (./data). Override with DB_URL (e.g. an
+    # absolute path or a mounted volume) without code changes.
+    url: ${DB_URL:jdbc:h2:file:./data/contractguard}
     driver-class-name: org.h2.Driver
     username: sa
     password: ""

@@ -240,6 +240,22 @@ public class RegistryController {
         return store.listNotifications();
     }
 
+    /**
+     * Registry and workflow metrics aggregated from real rows: publication outcomes,
+     * breaking findings, affected consumers, blocked/overridden/rejected counts and
+     * webhook delivery status.
+     */
+    @GetMapping("/api/metrics")
+    public Map<String, Object> metrics() {
+        return store.metrics();
+    }
+
+    /** Migration guide for one attempt, generated from its stored findings. */
+    @GetMapping("/api/attempts/{id}/migration-guide")
+    public Map<String, Object> migrationGuide(@PathVariable long id) {
+        return publicationService.migrationGuide(id);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private RegistryStore.ServiceRow requireService(String slug) {

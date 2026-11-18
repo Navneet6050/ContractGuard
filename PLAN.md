@@ -241,6 +241,14 @@ Base: `http://localhost:8000` (env `PORT_APP` / `server.port`). JSON errors:
 Identity: actor recorded from optional `X-Acting-User` header, default `"anonymous"`
 (hackathon-level; see DECISIONS.md A-07).
 
+**As-built delta (M5, 2026-11-18):** the shipped surface (authoritative table in
+README.md) differs in prefixes (`/api/…` throughout, JSON body upload instead of
+multipart) and adds two endpoints planned later: `GET /api/metrics` (workflow metrics
+from real DB rows) and `GET /api/attempts/{id}/migration-guide` (migration steps
+generated from the attempt's stored findings + impacts). The planned `POST
+/consumers` re-upload (A-08) was cut for scope — kit consumers are imported at
+startup and re-upload remains a documented limitation.
+
 ## 6. Compatibility classification rules
 
 *(Unchanged from R1 — product logic, not technology.)*
