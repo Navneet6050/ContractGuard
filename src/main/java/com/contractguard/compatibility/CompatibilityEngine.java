@@ -289,6 +289,115 @@ public final class CompatibilityEngine {
         } else if (!isNullish(oldSchema)) {
             diffSchemaNode(op, path, locationKey, SchemaSide.REQUEST, oldSchema, newSchema, "", out);
         }
+        diffParamSerialization(op, path, locationKey, oldEnvelope, newEnvelope,
+                isNullish(oldSchema) ? null : oldSchema,
+                isNullish(newSchema) ? null : newSchema, out);
+    }
+
+    /**
+     * Serialization attributes (style / explode / allowReserved) define how the
+     * parameter value appears on the wire; the specs module records their deviations
+     * from the OpenAPI defaults under the envelope's {@code "x-serialization"}.
+     *
+     * <ul>
+     *   <li>A style change always alters the wire format (prefixes and delimiters),
+     *       so it is BREAKING: clients built against the old spec send the old
+     *       format to a server implementing the new one.</li>
+     *   <li>An explode change alters the wire format only for multi-valued
+     *       (array/object) parameters; for single-valued parameters it is visible
+     *       but wire-neutral (INFO, not guessed to be breaking).</li>
+     *   <li>{@code allowReserved} (query-only) gates whether reserved characters may
+     *       travel unencoded: disabling it can reject what existing clients send
+     *       (BREAKING); enabling it only grants permission (INFO).</li>
+     * </ul>
+     *
+     * <p>explode is only compared when both sides have the same style: when the style
+     * differs the style finding already covers the wire change (explode defaults are
+     * style-dependent, so a style flip would otherwise report a spurious second
+     * finding).
+     */
+    private void diffParamSerialization(LocationKeys.Operation op, String path, String locationKey,
+                                        JsonNode oldEnvelope, JsonNode newEnvelope,
+                                        JsonNode oldSchema, JsonNode newSchema,
+                                        List<CompatibilityFinding> out) {
+        String in = paramIn(locationKey);
+        if (in.isEmpty()) {
+            return;
+        }
+        boolean query = "query".equals(in);
+        String defaultStyle = query || "cookie".equals(in) ? "form" : "simple";
+        JsonNode oldSer = oldEnvelope.get("x-serialization");
+        JsonNode newSer = newEnvelope.get("x-serialization");
+        String oldStyle = serializationString(oldSer, "style", defaultStyle);
+        String newStyle = serializationString(newSer, "style", defaultStyle);
+        if (!oldStyle.equals(newStyle)) {
+            out.add(new CompatibilityFinding("PARAM.SERIALIZATION_CHANGED", Severity.BREAKING,
+                    "PARAM", op.verb(), path, locationKey, null,
+                    "serialization style changed from '" + oldStyle + "' to '" + newStyle
+                            + "' (the wire format of this parameter changes)",
+                    JsonWriter.write(oldSer), JsonWriter.write(newSer)));
+        } else {
+            boolean oldExplode = serializationBool(oldSer, "explode", "form".equals(oldStyle));
+            boolean newExplode = serializationBool(newSer, "explode", "form".equals(newStyle));
+            if (oldExplode != newExplode) {
+                boolean multiValued = multiValuedSchema(oldSchema) || multiValuedSchema(newSchema);
+                out.add(new CompatibilityFinding("PARAM.SERIALIZATION_CHANGED",
+                        multiValued ? Severity.BREAKING : Severity.INFO, "PARAM",
+                        op.verb(), path, locationKey, null,
+                        "explode changed from " + oldExplode + " to " + newExplode
+                                + (multiValued
+                                        ? " (the wire format changes for array/object values)"
+                                        : " (single-valued parameter: no wire format change)"),
+                        JsonWriter.write(oldSer), JsonWriter.write(newSer)));
+            }
+        }
+        if (query) {
+            boolean oldAllow = serializationBool(oldSer, "allowReserved", false);
+            boolean newAllow = serializationBool(newSer, "allowReserved", false);
+            if (oldAllow && !newAllow) {
+                out.add(new CompatibilityFinding("PARAM.SERIALIZATION_CHANGED", Severity.BREAKING,
+                        "PARAM", op.verb(), path, locationKey, null,
+                        "allowReserved disabled: unencoded reserved characters are no longer allowed",
+                        JsonWriter.write(oldSer), JsonWriter.write(newSer)));
+            } else if (!oldAllow && newAllow) {
+                out.add(new CompatibilityFinding("PARAM.SERIALIZATION_CHANGED", Severity.INFO,
+                        "PARAM", op.verb(), path, locationKey, null,
+                        "allowReserved enabled: reserved characters may now be sent unencoded",
+                        JsonWriter.write(oldSer), JsonWriter.write(newSer)));
+            }
+        }
+    }
+
+    /** "POST /a/{0} :: param:path:1" → "path" ("" when the scope is not a parameter). */
+    private static String paramIn(String locationKey) {
+        String scope = LocationKeys.scopeOf(locationKey);
+        if (!scope.startsWith("param:")) {
+            return "";
+        }
+        String rest = scope.substring("param:".length());
+        int ordinal = rest.lastIndexOf(':');
+        return ordinal < 0 ? rest : rest.substring(0, ordinal);
+    }
+
+    private static String serializationString(JsonNode serialization, String field, String fallback) {
+        JsonNode value = serialization == null ? null : serialization.get(field);
+        return value != null && value.isString() && !value.stringValue().isBlank()
+                ? value.stringValue()
+                : fallback;
+    }
+
+    private static boolean serializationBool(JsonNode serialization, String field, boolean fallback) {
+        JsonNode value = serialization == null ? null : serialization.get(field);
+        return value != null && value.isBoolean() ? value.booleanValue() : fallback;
+    }
+
+    /** True when the schema can carry more than one value (array or object). */
+    private static boolean multiValuedSchema(JsonNode schema) {
+        if (isNullish(schema) || !schema.isObject()) {
+            return false;
+        }
+        Set<String> types = typeSet(schema);
+        return types.contains("array") || types.contains("object");
     }
 
     private void diffResponses(LocationKeys.Operation op, String path,
@@ -828,6 +937,21 @@ public final class CompatibilityEngine {
      * BREAKING, response: tighter promise = INFO); branch addition widens it (request:
      * INFO, response: widened promise = BREAKING). oneOf exclusivity is not analyzed —
      * its acceptance direction matches anyOf's, which is what the gate needs.
+     */
+    /**
+     * Compares composition lists branch-wise. anyOf and oneOf are treated the same
+     * (the visible set of alternatives is what changes): deep-equal branches cancel
+     * regardless of position (reordering is cosmetic), same-size leftovers are paired
+     * positionally for a recursive diff, and size changes emit
+     * COMPOSITION_BRANCH_ADDED/REMOVED with the usual request/response asymmetry.
+     *
+     * <p>DOCUMENTED LIMITATION — oneOf exclusivity is NOT interpreted: the engine
+     * never validates the "exactly one branch must match" constraint, so it cannot
+     * detect (a) two branches being made mutually exclusive or (b) a removal that
+     * widens the accepted set when branches overlap. Overlapping-branch exclusivity
+     * is not decidable from the branch schemas alone without a solver, so the change
+     * is reported with the conservative alternative-set semantics above rather than
+     * guessed.
      */
     private void compareCompositions(LocationKeys.Operation op, String path, String locationKey,
                                      SchemaSide side, JsonNode oldNode, JsonNode newNode,

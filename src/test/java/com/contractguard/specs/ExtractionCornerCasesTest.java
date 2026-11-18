@@ -243,4 +243,86 @@ class ExtractionCornerCasesTest {
                 "{\"required\":false,\"schema\":{\"x-content\":{\"application/json\":"
                         + "{\"properties\":{\"x\":{\"type\":\"string\"}},\"type\":\"object\"}}}}");
     }
+
+    @Test
+    @DisplayName("serialization attributes are recorded as deviations from the OpenAPI defaults; explicit defaults and non-query allowReserved stay invisible")
+    void serializationEnvelope() {
+        // explode:false on a query parameter deviates from the form-style default (true)
+        String explodeFalse = HEADER + """
+                  /a:
+                    get:
+                      parameters:
+                        - {name: ids, in: query, style: form, explode: false, schema: {type: array, items: {type: string}}}
+                      responses: {'200': {description: ok}}
+                """;
+        assertThat(parser.parse(explodeFalse).getEffectiveSchemas()
+                .get("GET /a :: param:query:1")).isEqualTo(
+                "{\"required\":false,\"schema\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},"
+                        + "\"x-serialization\":{\"explode\":false}}");
+
+        // style:matrix + explode:true on a path parameter deviates from simple/false
+        String matrix = HEADER + """
+                  /b/{id}:
+                    get:
+                      parameters:
+                        - {name: id, in: path, required: true, style: matrix, explode: true, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        assertThat(parser.parse(matrix).getEffectiveSchemas()
+                .get("GET /b/{0} :: param:path:1")).isEqualTo(
+                "{\"required\":true,\"schema\":{\"type\":\"string\"},"
+                        + "\"x-serialization\":{\"explode\":true,\"style\":\"matrix\"}}");
+
+        // allowReserved is query-only: recorded for query...
+        String reserved = HEADER + """
+                  /c:
+                    get:
+                      parameters:
+                        - {name: q, in: query, allowReserved: true, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        assertThat(parser.parse(reserved).getEffectiveSchemas()
+                .get("GET /c :: param:query:1")).isEqualTo(
+                "{\"required\":false,\"schema\":{\"type\":\"string\"},"
+                        + "\"x-serialization\":{\"allowReserved\":true}}");
+
+        // ...and ignored for non-query parameters (OAS 3.0: allowReserved applies to query)
+        String reservedOnPath = matrix.replace("style: matrix, explode: true, ", "")
+                .replace("schema: {type: string}", "allowReserved: true, schema: {type: string}");
+        assertThat(parser.parse(reservedOnPath).getEffectiveSchemas()
+                .get("GET /b/{0} :: param:path:1")).isEqualTo(
+                "{\"required\":true,\"schema\":{\"type\":\"string\"}}");
+
+        // spelling the implicit defaults out explicitly is wire-neutral: no envelope change
+        String explicitDefaults = HEADER + """
+                  /d:
+                    get:
+                      parameters:
+                        - {name: q, in: query, style: form, explode: true, allowReserved: false, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        assertThat(parser.parse(explicitDefaults).getEffectiveSchemas()
+                .get("GET /d :: param:query:1")).isEqualTo(
+                "{\"required\":false,\"schema\":{\"type\":\"string\"}}");
+    }
+
+    @Test
+    @DisplayName("a $ref-wrapped parameter keeps its serialization attributes in the envelope")
+    void refWrappedSerialization() {
+        String y = HEADER + """
+                  /a:
+                    get:
+                      parameters:
+                        - {$ref: '#/components/parameters/Ids'}
+                      responses: {'200': {description: ok}}
+                components:
+                  parameters:
+                    Ids: {name: ids, in: query, style: form, explode: false, schema: {type: array, items: {type: string}}}
+                """;
+
+        assertThat(parser.parse(y).getEffectiveSchemas()
+                .get("GET /a :: param:query:1")).isEqualTo(
+                "{\"required\":false,\"schema\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},"
+                        + "\"x-serialization\":{\"explode\":false}}");
+    }
 }

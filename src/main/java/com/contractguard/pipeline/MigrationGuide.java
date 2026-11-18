@@ -95,6 +95,12 @@ public final class MigrationGuide {
                 case "PARAM.REMOVED" -> param != null
                         ? plain("Stop sending the '" + param + "' parameter; it was removed.", field)
                         : plain("Stop sending the removed parameter (see finding detail).", field);
+                case "PARAM.SERIALIZATION_CHANGED" -> param != null
+                        ? plain("Regenerate or update the client for the '" + param
+                                + "' parameter: its wire serialization changed ("
+                                + finding.detail() + ").", field)
+                        : plain("Regenerate or update the client: this parameter's wire"
+                                + " serialization changed (see finding detail).", field);
                 case "PATH_SHAPE.CHANGED" -> plain(
                         "Update client routing/templating: the path shape of this operation"
                                 + " changed (" + finding.detail() + ").", field);

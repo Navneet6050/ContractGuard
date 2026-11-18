@@ -194,6 +194,19 @@ public class ConsumerImpactAnalyzer {
                     + " whether you send it is unknown");
         }
         boolean declared = binding.sends().contains(name);
+        if (f.code().equals("PARAM.SERIALIZATION_CHANGED")) {
+            // the wire format of the parameter changed: a client that sends it may
+            // serialize values in the old format; non-breaking serialization changes
+            // never rise above NONE (documented rule)
+            if (!declared) {
+                return none(f, "does not declare sending parameter '" + name + "'");
+            }
+            return f.severity() == Severity.BREAKING
+                    ? affected(f, "you send parameter '" + name + "', whose wire serialization"
+                            + " changed on " + f.method() + " " + f.path() + " (" + f.detail() + ")")
+                    : none(f, "you send parameter '" + name + "', whose serialization changed"
+                            + " without restricting what you may send (" + f.detail() + ")");
+        }
         if (added) {
             if (declared) {
                 return none(f, "already declares sending parameter '" + name + "'");

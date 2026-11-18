@@ -139,6 +139,7 @@ final class EffectiveSchemaExtractor {
                 envelope.set("schema", schema != null ? expandSchema(schema)
                         : JsonNodeFactory.instance.nullNode());
             }
+            addSerializationEnvelope(param, in, envelope);
             out.put(locationKey,
                     JsonMappers.writeCanonical(CanonicalJson.canonicalize(envelope)));
         }
@@ -647,6 +648,45 @@ final class EffectiveSchemaExtractor {
     private static boolean requiredFlag(JsonNode param) {
         JsonNode required = param.get("required");
         return required != null && required.isBoolean() && required.booleanValue();
+    }
+
+    /**
+     * Records parameter serialization attributes (style / explode / allowReserved) in
+     * the envelope under {@code "x-serialization"} — these change how the parameter
+     * value appears on the wire, so two envelopes that differ here are not
+     * wire-identical. Only DEVIATIONS from the OpenAPI defaults are recorded
+     * (style: "form" for query/cookie, "simple" for path/header; explode: true for
+     * form style, false otherwise; allowReserved: false, query-only per OAS 3.0), so
+     * spelling an implicit default out explicitly stays wire-neutral and produces an
+     * identical envelope. Content-form parameters carry their own media map; their
+     * serialization attributes are still recorded when present.
+     */
+    private static void addSerializationEnvelope(JsonNode param, String in, ObjectNode envelope) {
+        String defaultStyle = "query".equals(in) || "cookie".equals(in) ? "form" : "simple";
+        JsonNode styleNode = param.get("style");
+        String style = styleNode != null && styleNode.isString() && !styleNode.stringValue().isBlank()
+                ? styleNode.stringValue()
+                : defaultStyle;
+        boolean defaultExplode = "form".equals(style);
+        JsonNode explodeNode = param.get("explode");
+        boolean explode = explodeNode != null && explodeNode.isBoolean()
+                ? explodeNode.booleanValue()
+                : defaultExplode;
+        TreeMap<String, JsonNode> serialization = new TreeMap<>();
+        if (!style.equals(defaultStyle)) {
+            serialization.put("style", JsonMappers.textNode(style));
+        }
+        if (explode != defaultExplode) {
+            serialization.put("explode", JsonNodeFactory.instance.booleanNode(explode));
+        }
+        JsonNode allowReserved = param.get("allowReserved");
+        if ("query".equals(in) && allowReserved != null && allowReserved.isBoolean()
+                && allowReserved.booleanValue()) {
+            serialization.put("allowReserved", JsonNodeFactory.instance.booleanNode(true));
+        }
+        if (!serialization.isEmpty()) {
+            envelope.set("x-serialization", JsonMappers.objectNodeFrom(serialization));
+        }
     }
 
     /** pathShape → first raw path template seen at that shape. */

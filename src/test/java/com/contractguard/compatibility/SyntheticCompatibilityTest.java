@@ -922,4 +922,167 @@ class SyntheticCompatibilityTest {
         assertThat(diff(inline, referenced)).isEmpty();
         assertThat(diff(referenced, inline)).isEmpty();
     }
+
+    // ------------------------------------------------------- parameter serialization
+
+    @Test
+    @DisplayName("PARAM serialization: explode changes alter the wire format for array/object parameters, not for single-valued ones; explicit OpenAPI defaults are wire-neutral")
+    void paramSerializationSemantics() {
+        String oldY = HEADER + """
+                  /a:
+                    get:
+                      parameters:
+                        - {name: ids, in: query, style: form, explode: true, schema: {type: array, items: {type: string}}}
+                        - {name: tag, in: query, style: form, explode: true, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        // explode true -> false on the array parameter: "?ids=1&ids=2" becomes "?ids=1,2"
+        // on the wire; on the scalar parameter explode has no wire effect
+        String newY = oldY.replace("explode: true", "explode: false");
+        List<CompatibilityFinding> findings = diff(oldY, newY);
+        assertThat(findings).filteredOn(f -> f.code().equals("PARAM.SERIALIZATION_CHANGED"))
+                .hasSize(2)
+                .extracting(CompatibilityFinding::location)
+                .allSatisfy(l -> assertThat(l).contains("param:query:"));
+        assertThat(findings).filteredOn(f -> f.severity() == Severity.BREAKING)
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.location()).contains("param:query:1");
+                    assertThat(f.detail()).contains("explode changed from true to false")
+                            .contains("array/object");
+                });
+        assertThat(findings).filteredOn(f -> f.severity() == Severity.INFO)
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.location()).contains("param:query:2");
+                    assertThat(f.detail()).contains("no wire format change");
+                });
+
+        // spelling the implicit defaults out explicitly changes nothing on the wire
+        String explicitDefaults = HEADER + """
+                  /b:
+                    get:
+                      parameters:
+                        - {name: q, in: query, style: form, explode: true, allowReserved: false, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        String implicitDefaults = explicitDefaults
+                .replace("style: form, explode: true, allowReserved: false, ", "");
+        assertThat(diff(implicitDefaults, explicitDefaults)).isEmpty();
+        assertThat(diff(explicitDefaults, implicitDefaults)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("PARAM serialization: style changes always alter the wire format; disabling allowReserved is breaking, enabling it is informational")
+    void paramStyleAndAllowReserved() {
+        String oldY = HEADER + """
+                  /a/{id}:
+                    get:
+                      parameters:
+                        - {name: id, in: path, required: true, style: matrix, explode: false, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        // ";id=3" (matrix) becomes "/3" (simple): a different wire format for the same
+        // parameter — clients built against the old spec send the old shape
+        String newY = oldY.replace("style: matrix, explode: false, ", "");
+        List<CompatibilityFinding> findings = diff(oldY, newY);
+        assertThat(findings).filteredOn(f -> f.code().equals("PARAM.SERIALIZATION_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.location()).contains("param:path:1");
+                    assertThat(f.detail()).contains("style changed from 'matrix' to 'simple'");
+                });
+
+        String oldReserved = HEADER + """
+                  /b:
+                    get:
+                      parameters:
+                        - {name: q, in: query, allowReserved: true, schema: {type: string}}
+                      responses: {'200': {description: ok}}
+                """;
+        // permission removed: clients may rely on sending unencoded reserved characters
+        List<CompatibilityFinding> disabled = diff(oldReserved,
+                oldReserved.replace("allowReserved: true, ", ""));
+        assertThat(disabled).filteredOn(f -> f.code().equals("PARAM.SERIALIZATION_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("allowReserved disabled");
+                });
+        // permission granted: purely additive, informational
+        List<CompatibilityFinding> enabled = diff(
+                oldReserved.replace("allowReserved: true, ", ""), oldReserved);
+        assertThat(enabled).filteredOn(f -> f.code().equals("PARAM.SERIALIZATION_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.INFO);
+                    assertThat(f.detail()).contains("allowReserved enabled");
+                });
+    }
+
+    // ------------------------------------------------------- oneOf semantics
+
+    @Test
+    @DisplayName("oneOf: reordering is cosmetic; branch removal/addition follow the request/response asymmetry; an evolved branch diffs at its position (exclusivity itself is NOT interpreted)")
+    void oneOfSemantics() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {v: {oneOf: [{type: string}, {type: number}]}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {w: {oneOf: [{type: string}, {type: number}]}}}
+                """;
+        // same branches, different order: the visible alternative set is unchanged
+        String reordered = oldY
+                .replace("properties: {v: {oneOf: [{type: string}, {type: number}]}}",
+                        "properties: {v: {oneOf: [{type: number}, {type: string}]}}")
+                .replace("properties: {w: {oneOf: [{type: string}, {type: number}]}}",
+                        "properties: {w: {oneOf: [{type: number}, {type: string}]}}");
+        assertThat(diff(oldY, reordered)).isEmpty();
+
+        // removing the number alternative: request side narrows (breaking), response
+        // side loses a guaranteed possible shape (info)
+        String delta = oldY
+                .replace("properties: {v: {oneOf: [{type: string}, {type: number}]}}",
+                        "properties: {v: {oneOf: [{type: string}]}}")
+                .replace("properties: {w: {oneOf: [{type: string}, {type: number}]}}",
+                        "properties: {w: {oneOf: [{type: string}]}}");
+        List<CompatibilityFinding> findings = diff(oldY, delta);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.COMPOSITION_BRANCH_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("oneOf").contains("alternative removed");
+                });
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.COMPOSITION_BRANCH_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+
+        // adding a boolean alternative to the response: the promise space widened
+        String widened = oldY.replace("properties: {w: {oneOf: [{type: string}, {type: number}]}}",
+                "properties: {w: {oneOf: [{type: string}, {type: number}, {type: boolean}]}}");
+        List<CompatibilityFinding> widenedFindings = diff(oldY, widened);
+        assertThat(widenedFindings).filteredOn(f -> f.code().equals("RESP.COMPOSITION_BRANCH_ADDED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // an evolved branch (same size, second branch narrowed) diffs inside its position
+        String evolved = oldY.replace("properties: {v: {oneOf: [{type: string}, {type: number}]}}",
+                "properties: {v: {oneOf: [{type: string}, {type: integer}]}}");
+        List<CompatibilityFinding> evolvedFindings = diff(oldY, evolved);
+        assertThat(evolvedFindings).filteredOn(f -> f.code().equals("REQ.TYPE_NARROWED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.fieldPath()).isEqualTo("v[1]");
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                });
+    }
 }
