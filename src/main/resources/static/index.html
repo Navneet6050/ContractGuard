@@ -7,17 +7,30 @@
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; color: #1a1a2e; max-width: 1100px; }
     h1 { margin-bottom: 4px; }
+    h2 { margin-top: 0; }
     .sub { color: #666; margin-bottom: 24px; }
     .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
     pre { background: #f5f5f7; padding: 12px; border-radius: 6px; overflow-x: auto; }
     textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; height: 140px; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    input { padding: 6px 8px; border: 1px solid #bbb; border-radius: 6px; }
     button { padding: 8px 16px; border-radius: 6px; border: 1px solid #3556c7; background: #3556c7; color: #fff; cursor: pointer; }
     button:disabled { background: #999; border-color: #999; }
+    button.secondary { background: #f0f2f8; color: #1a1a2e; border-color: #999; }
+    button.warn { background: #b3261e; border-color: #b3261e; }
+    button.ok { background: #188038; border-color: #188038; }
     .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; }
     .AFFECTED { background: #d93025; color: #fff; }
     .POSSIBLE { background: #f9ab00; color: #222; }
     .NONE { background: #188038; color: #fff; }
+    .breaking { background: #d93025; color: #fff; }
+    .warn { background: #f9ab00; color: #222; }
+    .info { background: #188038; color: #fff; }
+    .state-auto_published, .state-published { background: #188038; color: #fff; }
+    .state-overridden_published { background: #7b1fa2; color: #fff; }
+    .state-pending_ack { background: #f9ab00; color: #222; }
+    .state-blocked { background: #d93025; color: #fff; }
+    .state-rejected, .state-abandoned { background: #666; color: #fff; }
     table { border-collapse: collapse; width: 100%; margin-top: 8px; }
     th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
     th { background: #f0f2f8; }
@@ -25,6 +38,8 @@
     .muted { color: #777; }
     ul { margin: 4px 0 0 16px; padding: 0; }
     li { margin-bottom: 3px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .row > div { flex: 0 0 auto; }
   </style>
 </head>
 <body>
@@ -32,8 +47,107 @@
   <p class="sub">API contract registry &amp; breaking-change detection</p>
 
   <div class="card">
+    <div class="row">
+      <div>
+        <label for="actor">Acting user</label>
+        <input id="actor" value="" placeholder="anonymous" style="width:200px">
+        <div class="muted" style="font-size:12px">attribution for the audit log only — not RBAC</div>
+      </div>
+      <div>
+        <label for="activeService">Active service (slug)</label>
+        <input id="activeService" value="quote-api" style="width:220px">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Health</h2>
     <pre id="health">loading…</pre>
+  </div>
+
+  <div class="card">
+    <h2>Service registry</h2>
+    <p><button id="loadServices" class="secondary">Refresh registry</button></p>
+    <div id="servicesOut" class="muted">Not loaded yet.</div>
+    <h3>Register a service</h3>
+    <div class="row">
+      <div><label>Slug</label><input id="newSlug" placeholder="payments-api"></div>
+      <div><label>Title</label><input id="newTitle" placeholder="Payments API"></div>
+      <div><label>Owning team</label><input id="newOwner" placeholder="payments"></div>
+      <div><label>Description</label><input id="newDesc" size="40" placeholder="what this service guarantees"></div>
+      <div><button id="register">Register service</button></div>
+    </div>
+    <div id="registerOut" class="muted"></div>
+  </div>
+
+  <div class="card">
+    <h2>Upload &amp; publish for <span id="uploadServiceLabel" class="muted"></span></h2>
+    <label>Source filename (optional, recorded with the version)</label>
+    <input id="filename" style="width:340px" placeholder="candidate.yaml">
+    <label>Candidate spec (YAML or JSON)</label>
+    <textarea id="candidateYaml" placeholder="paste the OpenAPI spec"></textarea>
+    <p>
+      <button id="check" class="secondary">Dry-run check</button>
+      <button id="upload">Upload &amp; run publishing gate</button>
+    </p>
+    <div id="uploadOut" class="muted">No upload evaluated yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Compare registered versions for <span id="compareServiceLabel" class="muted"></span></h2>
+    <div class="row">
+      <div><label>From version</label><input id="fromVersion" style="width:120px" placeholder="1.0.0"></div>
+      <div><label>To version</label><input id="toVersion" style="width:120px" placeholder="1.1.0"></div>
+      <div><button id="compare" class="secondary">Compare (dry-run)</button></div>
+    </div>
+    <div id="compareOut" class="muted">No comparison yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Publication attempts for <span id="attemptsServiceLabel" class="muted"></span></h2>
+    <p><button id="loadAttempts" class="secondary">Load attempts</button></p>
+    <div id="attemptsOut" class="muted">No attempts loaded.</div>
+    <h3>Attempt detail &amp; decision</h3>
+    <div class="row">
+      <div><label>Attempt id</label><input id="attemptId" style="width:90px" placeholder="1"></div>
+      <div><button id="loadAttempt" class="secondary">Load attempt</button></div>
+    </div>
+    <div id="attemptOut" class="muted">No attempt loaded.</div>
+    <div class="row" style="margin-top:12px">
+      <div><label>Comment (for acknowledge)</label><input id="ackComment" size="36" placeholder="breaking changes reviewed"></div>
+      <div><button id="ackBtn" class="ok">Acknowledge</button></div>
+    </div>
+    <div class="row">
+      <div><label>Justification (required for override)</label><input id="overrideJustification" size="52" placeholder="why publishing despite affected consumers is safe"></div>
+      <div><button id="overrideBtn" class="warn">Override</button></div>
+    </div>
+    <div class="row">
+      <div><button id="abandonBtn" class="secondary">Abandon attempt</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>History for <span id="historyServiceLabel" class="muted"></span></h2>
+    <p><button id="loadHistory" class="secondary">Load history</button></p>
+    <div id="historyOut" class="muted">No history loaded.</div>
+  </div>
+
+  <div class="card">
+    <h2>Changelog for <span id="changelogServiceLabel" class="muted"></span></h2>
+    <p><button id="loadChangelog" class="secondary">Load changelog</button></p>
+    <div id="changelogOut" class="muted">No changelog loaded.</div>
+  </div>
+
+  <div class="card">
+    <h2>Audit log</h2>
+    <p><button id="loadAudit" class="secondary">Load audit trail</button></p>
+    <div id="auditOut" class="muted">No audit events loaded.</div>
+  </div>
+
+  <div class="card">
+    <h2>Webhook notifications log</h2>
+    <p><button id="loadNotifications" class="secondary">Load notifications</button></p>
+    <div id="notificationsOut" class="muted">No notifications loaded.</div>
   </div>
 
   <div class="card">
@@ -49,9 +163,408 @@
   </div>
 
   <script>
+    // ---------------------------------------------------------------- helpers
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function actor() { return document.getElementById('actor').value.trim(); }
+
+    function activeService() { return document.getElementById('activeService').value.trim(); }
+
+    function headers() {
+      const h = { 'Content-Type': 'application/json' };
+      const who = actor();
+      if (who) h['X-Acting-User'] = who;
+      return h;
+    }
+
+    async function callApi(url, options, outId) {
+      const out = document.getElementById(outId);
+      try {
+        const res = await fetch(url, options);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          let msg = body.error || ('request failed with status ' + res.status);
+          if (body.errors && body.errors.length) {
+            msg += '\n' + body.errors.map(e => '· ' + (e.pointer || '?') + ': ' + e.message).join('\n');
+          }
+          out.innerHTML = '<pre style="color:#b3261e">Error ' + res.status + ': ' + esc(msg) + '</pre>';
+          return null;
+        }
+        return body;
+      } catch (e) {
+        out.innerHTML = '<pre style="color:#b3261e">request failed: ' + esc(e) + '</pre>';
+        return null;
+      }
+    }
+
+    function badge(kind, text) {
+      return '<span class="badge ' + esc(kind) + '">' + esc(text || kind) + '</span>';
+    }
+
+    function stateBadge(state) { return state ? badge('state-' + state, state) : ''; }
+    function severityBadge(sev) { return badge(sev, sev); }
+
+    function setServiceLabels() {
+      const s = esc(activeService());
+      for (const id of ['uploadServiceLabel', 'compareServiceLabel', 'attemptsServiceLabel',
+                        'historyServiceLabel', 'changelogServiceLabel']) {
+        document.getElementById(id).textContent = activeService();
+      }
+    }
+    document.getElementById('activeService').addEventListener('change', setServiceLabels);
+
+    // ---------------------------------------------------------------- health
+
     fetch('/api/health').then(r => r.json())
       .then(j => { document.getElementById('health').textContent = JSON.stringify(j, null, 2); })
       .catch(e => { document.getElementById('health').textContent = 'health check failed: ' + e; });
+
+    // ---------------------------------------------------------------- registry
+
+    document.getElementById('loadServices').addEventListener('click', loadServices);
+
+    async function loadServices() {
+      const services = await callApi('/api/services', { method: 'GET' }, 'servicesOut');
+      if (!services) return;
+      let html = '<table><tr><th>Slug</th><th>Title</th><th>Owner</th><th>Current version</th><th>Versions</th><th>Registered</th></tr>';
+      for (const s of services) {
+        html += '<tr><td><code>' + esc(s.slug) + '</code></td><td>' + esc(s.title) + '</td><td>'
+          + esc(s.ownerTeam || '—') + '</td><td>' + esc(s.currentVersion || 'none') + '</td><td>'
+          + s.versionCount + '</td><td class="muted">' + esc((s.createdAt || '').replace('T', ' ')) + '</td></tr>';
+      }
+      html += '</table>';
+      document.getElementById('servicesOut').innerHTML = html;
+    }
+
+    document.getElementById('register').addEventListener('click', async () => {
+      const body = {
+        slug: document.getElementById('newSlug').value.trim(),
+        title: document.getElementById('newTitle').value.trim(),
+        ownerTeam: document.getElementById('newOwner').value.trim(),
+        description: document.getElementById('newDesc').value.trim()
+      };
+      const result = await callApi('/api/services', {
+        method: 'POST', headers: headers(), body: JSON.stringify(body)
+      }, 'registerOut');
+      if (result) {
+        document.getElementById('registerOut').innerHTML =
+          'Registered <code>' + esc(result.slug) + '</code> (id ' + result.id + ').';
+        loadServices();
+      }
+    });
+
+    // ---------------------------------------------------------------- upload & dry-run
+
+    async function postSpec(path, outId, btn) {
+      const service = activeService();
+      const yaml = document.getElementById('candidateYaml').value;
+      if (!service || !yaml.trim()) {
+        document.getElementById(outId).textContent = 'active service and spec text are required.';
+        return;
+      }
+      const filename = document.getElementById('filename').value.trim();
+      const body = { yaml: yaml };
+      if (filename) body.filename = filename;
+      btn.disabled = true;
+      const previous = btn.textContent;
+      btn.textContent = 'Evaluating…';
+      const result = await callApi('/api/services/' + encodeURIComponent(service) + '/' + path,
+        { method: 'POST', headers: headers(), body: JSON.stringify(body) }, outId);
+      btn.disabled = false;
+      btn.textContent = previous;
+      return result;
+    }
+
+    document.getElementById('check').addEventListener('click', async () => {
+      const report = await postSpec('check', 'uploadOut', document.getElementById('check'));
+      if (report) renderReport(report, 'uploadOut', 'Dry-run decision report');
+    });
+
+    document.getElementById('upload').addEventListener('click', async () => {
+      const result = await postSpec('specs', 'uploadOut', document.getElementById('upload'));
+      if (!result) return;
+      if (result.state) {
+        renderAttemptSummary(result, 'uploadOut');
+      } else {
+        document.getElementById('uploadOut').innerHTML =
+          '<p>' + badge('state-published', result.status) + ' ' + esc(result.message) + '</p>';
+      }
+    });
+
+    // ---------------------------------------------------------------- compare
+
+    document.getElementById('compare').addEventListener('click', async () => {
+      const service = activeService();
+      const from = document.getElementById('fromVersion').value.trim();
+      const to = document.getElementById('toVersion').value.trim();
+      if (!service || !from || !to) {
+        document.getElementById('compareOut').textContent = 'service, from and to versions are required.';
+        return;
+      }
+      const report = await callApi('/api/services/' + encodeURIComponent(service)
+        + '/compare?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to),
+        { method: 'GET' }, 'compareOut');
+      if (report) renderReport(report, 'compareOut', 'Registered-version comparison');
+    });
+
+    // ---------------------------------------------------------------- report renderer (check/compare)
+
+    function renderReport(report, outId, heading) {
+      let html = '<h3>' + esc(heading) + '</h3>'
+        + '<p>' + esc(report.service) + ' ' + esc(report.oldVersion || '(none)')
+        + ' → ' + esc(report.version || report.newVersion || '') + ' · decision '
+        + stateBadge((report.decision || '').toLowerCase()) + '</p>';
+      if (report.reasons && report.reasons.length) {
+        html += '<ul>' + report.reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul>';
+      }
+      if (report.requiredAction) {
+        html += '<p><b>Required action:</b> ' + esc(report.requiredAction) + '</p>';
+      }
+      if (report.note) html += '<p class="muted">' + esc(report.note) + '</p>';
+
+      if (report.policyFindings && report.policyFindings.length) {
+        html += '<h4>Version-policy warnings (advisory, never gate)</h4><ul>'
+          + report.policyFindings.map(p => '<li>' + severityBadge(p.severity) + ' <code>'
+            + esc(p.code) + '</code> ' + esc(p.detail) + '</li>').join('') + '</ul>';
+      }
+      if (report.findings && report.findings.length) {
+        html += '<h4>Compatibility findings</h4><table><tr><th>Severity</th><th>Code</th><th>Location</th><th>Field</th><th>Detail</th></tr>'
+          + report.findings.map(f => '<tr><td>' + severityBadge(f.severity) + '</td><td><code>'
+            + esc(f.code) + '</code></td><td>' + esc(f.location || '') + '</td><td>'
+            + esc(f.fieldPath || '') + '</td><td>' + esc(f.detail) + '</td></tr>').join('')
+          + '</table>';
+      }
+      if (report.summary) {
+        html += '<h4>Consumer impact</h4><p>' + report.summary.affectedCount + ' affected / '
+          + report.summary.possibleCount + ' possible / ' + report.summary.unaffectedCount
+          + ' unaffected</p>';
+        for (const c of report.summary.consumers) {
+          html += '<p>' + badge(c.level, c.level) + ' <b>' + esc(c.consumer) + '</b> <span class="muted">('
+            + esc(c.team || '') + ')</span> — ' + esc(c.reason || '') + '</p>';
+          if (c.impacts && c.impacts.length) {
+            html += '<ul>' + c.impacts.map(i => '<li>' + badge(i.level, i.level) + ' <code>'
+              + esc(i.findingCode) + '</code> ' + esc(i.location || '')
+              + (i.fieldPath ? ' · <code>' + esc(i.fieldPath) + '</code>' : '') + '<br>'
+              + esc(i.reason || '') + '</li>').join('') + '</ul>';
+          }
+        }
+      }
+      document.getElementById(outId).innerHTML = html;
+    }
+
+    // ---------------------------------------------------------------- attempts
+
+    document.getElementById('loadAttempts').addEventListener('click', loadAttempts);
+
+    async function loadAttempts() {
+      const service = activeService();
+      if (!service) return;
+      const attempts = await callApi('/api/services/' + encodeURIComponent(service) + '/attempts',
+        { method: 'GET' }, 'attemptsOut');
+      if (!attempts) return;
+      if (!attempts.length) {
+        document.getElementById('attemptsOut').innerHTML = '<p class="muted">No publication attempts yet.</p>';
+        return;
+      }
+      let html = '<table><tr><th>Id</th><th>Version</th><th>State</th><th>Breaking</th><th>Created</th><th>Decided</th><th>Decided by</th><th>Justification</th></tr>';
+      for (const a of attempts) {
+        html += '<tr><td>' + a.id + '</td><td>' + esc(a.incomingVersion) + '</td><td>'
+          + stateBadge(a.state) + '</td><td>' + a.breakingCount + '</td><td class="muted">'
+          + esc((a.createdAt || '').replace('T', ' ')) + '</td><td class="muted">'
+          + esc((a.decidedAt || '').replace('T', ' ')) + '</td><td>' + esc(a.decidedBy || '—')
+          + '</td><td>' + esc(a.justification || '') + '</td></tr>';
+      }
+      html += '</table>';
+      document.getElementById('attemptsOut').innerHTML = html;
+    }
+
+    document.getElementById('loadAttempt').addEventListener('click', loadAttempt);
+
+    async function loadAttempt() {
+      const id = document.getElementById('attemptId').value.trim();
+      if (!id) return;
+      const attempt = await callApi('/api/attempts/' + encodeURIComponent(id),
+        { method: 'GET' }, 'attemptOut');
+      if (attempt) renderAttemptSummary(attempt, 'attemptOut');
+    }
+
+    function renderAttemptSummary(attempt, outId) {
+      let html = '<h3>Attempt #' + attempt.attemptId + ' — ' + esc(attempt.service) + ' '
+        + esc(attempt.incomingVersion) + ' ' + stateBadge(attempt.state) + '</h3>';
+      if (attempt.decision) {
+        html += '<p><b>Gate decision:</b> ' + esc(attempt.decision) + ' · breaking findings: '
+          + attempt.breakingCount + '</p>';
+      }
+      if (attempt.requiredAction) {
+        html += '<p><b>Required action:</b> ' + esc(attempt.requiredAction) + '</p>';
+      }
+      if (attempt.reasons && attempt.reasons.length) {
+        html += '<ul>' + attempt.reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul>';
+      }
+      if (attempt.affectedConsumers && attempt.affectedConsumers.length) {
+        html += '<p><b>Affected consumers:</b> ' + esc(attempt.affectedConsumers.join(', ')) + '</p>';
+      }
+      if (attempt.policyFindings && attempt.policyFindings.length) {
+        html += '<p><b>Version-policy warnings (advisory):</b><ul>'
+          + attempt.policyFindings.map(p => '<li>' + severityBadge(p.severity) + ' <code>'
+            + esc(p.code) + '</code> ' + esc(p.detail) + '</li>').join('') + '</ul></p>';
+      }
+      if (attempt.justification) {
+        html += '<p><b>Recorded justification:</b> ' + esc(attempt.justification) + '</p>';
+      }
+      if (attempt.note) {
+        html += '<p class="muted"><b>Note:</b> ' + esc(attempt.note) + '</p>';
+      }
+      if (attempt.findings && attempt.findings.length) {
+        html += '<table><tr><th>Severity</th><th>Code</th><th>Location</th><th>Field</th><th>Detail</th><th>Impacts</th></tr>';
+        for (const f of attempt.findings) {
+          const impacts = (f.impacts || []).map(i => badge(i.level, i.level) + ' ' + esc(i.consumer)).join('<br>');
+          html += '<tr><td>' + severityBadge(f.severity) + '</td><td><code>' + esc(f.code)
+            + '</code></td><td>' + esc(f.location || '') + '</td><td>' + esc(f.fieldPath || '')
+            + '</td><td>' + esc(f.detail || '') + '</td><td>' + (impacts || '—') + '</td></tr>';
+        }
+        html += '</table>';
+      }
+      html += '<p class="muted">Allowed actions: ' + esc((attempt.allowedActions || []).join(', ') || 'none') + '</p>';
+      document.getElementById(outId).innerHTML = html;
+      document.getElementById('attemptId').value = attempt.attemptId;
+    }
+
+    async function decisionAction(action, outId, extraBody) {
+      const id = document.getElementById('attemptId').value.trim();
+      if (!id) {
+        document.getElementById(outId).textContent = 'attempt id is required.';
+        return;
+      }
+      const attempt = await callApi('/api/attempts/' + encodeURIComponent(id) + '/' + action,
+        { method: 'POST', headers: headers(), body: JSON.stringify(extraBody || {}) }, outId);
+      if (attempt) {
+        renderAttemptSummary(attempt, outId);
+        loadAttempts();
+        loadServices();
+      }
+    }
+
+    document.getElementById('ackBtn').addEventListener('click', () =>
+      decisionAction('acknowledge', 'attemptOut',
+        { comment: document.getElementById('ackComment').value.trim() || null }));
+
+    document.getElementById('overrideBtn').addEventListener('click', () =>
+      decisionAction('override', 'attemptOut',
+        { justification: document.getElementById('overrideJustification').value.trim() || null }));
+
+    document.getElementById('abandonBtn').addEventListener('click', () =>
+      decisionAction('abandon', 'attemptOut', {}));
+
+    // ---------------------------------------------------------------- history
+
+    document.getElementById('loadHistory').addEventListener('click', async () => {
+      const service = activeService();
+      if (!service) return;
+      const h = await callApi('/api/services/' + encodeURIComponent(service) + '/history',
+        { method: 'GET' }, 'historyOut');
+      if (!h) return;
+      let html = '<p><b>Current version:</b> ' + esc(h.currentVersion || 'none') + '</p>';
+      if (h.versions.length) {
+        html += '<h4>Published versions</h4><table><tr><th>Version</th><th>State</th><th>Source file</th><th>SHA-256</th><th>Published</th><th>By</th></tr>'
+          + h.versions.map(v => '<tr><td><code>' + esc(v.version) + '</code></td><td>' + stateBadge(v.state)
+            + '</td><td>' + esc(v.sourceFilename || '—') + '</td><td class="muted">'
+            + esc(String(v.sourceSha || '').slice(0, 12)) + '…</td><td class="muted">'
+            + esc((v.publishedAt || '').replace('T', ' ')) + '</td><td>' + esc(v.publishedBy || '—')
+            + '</td></tr>').join('') + '</table>';
+      } else {
+        html += '<p class="muted">No published versions.</p>';
+      }
+      if (h.attempts.length) {
+        html += '<h4>Attempts</h4><table><tr><th>Id</th><th>Version</th><th>State</th><th>Breaking</th><th>Decided by</th><th>Justification</th></tr>'
+          + h.attempts.map(a => '<tr><td>' + a.attemptId + '</td><td>' + esc(a.incomingVersion)
+            + '</td><td>' + stateBadge(a.state) + '</td><td>' + a.breakingCount + '</td><td>'
+            + esc(a.decidedBy || '—') + '</td><td>' + esc(a.justification || '') + '</td></tr>').join('')
+          + '</table>';
+      }
+      document.getElementById('historyOut').innerHTML = html;
+    });
+
+    // ---------------------------------------------------------------- changelog
+
+    document.getElementById('loadChangelog').addEventListener('click', async () => {
+      const service = activeService();
+      if (!service) return;
+      const log = await callApi('/api/services/' + encodeURIComponent(service) + '/changelog',
+        { method: 'GET' }, 'changelogOut');
+      if (!log) return;
+      if (!log.entries.length) {
+        document.getElementById('changelogOut').innerHTML = '<p class="muted">No published versions yet.</p>';
+        return;
+      }
+      let html = '';
+      for (const e of log.entries) {
+        html += '<h4>' + esc(e.version) + ' ' + stateBadge(e.decision) + ' <span class="muted">'
+          + esc((e.publishedAt || '').replace('T', ' ')) + ' · by ' + esc(e.publishedBy || 'anonymous')
+          + '</span></h4>';
+        if (e.previousVersion) html += '<p class="muted">after ' + esc(e.previousVersion) + '</p>';
+        if (e.justification) html += '<p><b>Override justification:</b> ' + esc(e.justification) + '</p>';
+        if (e.affectedConsumers && e.affectedConsumers.length) {
+          html += '<p><b>Affected consumers:</b> ' + esc(e.affectedConsumers.join(', ')) + '</p>';
+        }
+        const s = e.summary || {};
+        html += '<p class="muted">' + (s.breaking || 0) + ' breaking / ' + (s.warn || 0)
+          + ' warn / ' + (s.info || 0) + ' info</p>';
+        if (e.compatibilityChanges && e.compatibilityChanges.length) {
+          html += '<ul>' + e.compatibilityChanges.map(c => '<li>' + severityBadge(c.severity)
+            + ' <code>' + esc(c.code) + '</code> ' + esc(c.location || c.fieldPath || '')
+            + '<br>' + esc(c.detail || '')
+            + (c.consumerImpact ? ' <span class="muted">[' + esc(c.consumerImpact.join(', ')) + ']</span>' : '')
+            + '</li>').join('') + '</ul>';
+        }
+        if (e.policyWarnings && e.policyWarnings.length) {
+          html += '<p class="muted"><b>Semver warnings (advisory):</b><ul>'
+            + e.policyWarnings.map(p => '<li>' + esc(p.severity) + ' ' + esc(p.code) + ': '
+              + esc(p.detail) + '</li>').join('') + '</ul></p>';
+        }
+      }
+      document.getElementById('changelogOut').innerHTML = html;
+    });
+
+    // ---------------------------------------------------------------- audit & notifications
+
+    document.getElementById('loadAudit').addEventListener('click', async () => {
+      const events = await callApi('/api/audit', { method: 'GET' }, 'auditOut');
+      if (!events) return;
+      if (!events.length) {
+        document.getElementById('auditOut').innerHTML = '<p class="muted">No audit events yet.</p>';
+        return;
+      }
+      document.getElementById('auditOut').innerHTML =
+        '<table><tr><th>Time</th><th>Service</th><th>Version</th><th>Attempt</th><th>Action</th><th>Decision</th><th>Actor</th><th>Justification</th><th>Details</th></tr>'
+        + events.map(a => '<tr><td class="muted">' + esc((a.createdAt || '').replace('T', ' '))
+          + '</td><td>' + esc(a.service || '—') + '</td><td>' + esc(a.version || '—') + '</td><td>'
+          + (a.attemptId == null ? '—' : a.attemptId) + '</td><td><code>' + esc(a.action) + '</code></td><td>'
+          + esc(a.decision || '—') + '</td><td>' + esc(a.actor) + '</td><td>' + esc(a.justification || '')
+          + '</td><td>' + esc(a.details || '') + '</td></tr>').join('') + '</table>';
+    });
+
+    document.getElementById('loadNotifications').addEventListener('click', async () => {
+      const rows = await callApi('/api/notifications', { method: 'GET' }, 'notificationsOut');
+      if (!rows) return;
+      if (!rows.length) {
+        document.getElementById('notificationsOut').innerHTML =
+          '<p class="muted">No webhook notifications yet (sent on publication and on blocked/overridden decisions).</p>';
+        return;
+      }
+      document.getElementById('notificationsOut').innerHTML =
+        '<table><tr><th>Time</th><th>Kind</th><th>Service</th><th>Version</th><th>Target</th><th>Status</th><th>Payload</th></tr>'
+        + rows.map(n => '<tr><td class="muted">' + esc((n.createdAt || '').replace('T', ' '))
+          + '</td><td><code>' + esc(n.kind) + '</code></td><td>' + esc(n.service || '—') + '</td><td>'
+          + esc(n.version || '—') + '</td><td class="muted">' + esc(n.targetUrl) + '</td><td>'
+          + esc(n.status) + '</td><td><a href="#" onclick="alert(this.dataset.p);return false" data-p="'
+          + esc(n.payloadJson).replace(/"/g, '&quot;') + '">view</a></td></tr>').join('') + '</table>';
+    });
+
+    // ---------------------------------------------------------------- standalone impact analysis (unchanged)
 
     document.getElementById('analyze').addEventListener('click', async () => {
       const out = document.getElementById('impactOut');
@@ -74,7 +587,7 @@
           out.textContent = 'Error ' + res.status + ': ' + (err.error || 'request failed');
           return;
         }
-        render(await res.json());
+        renderImpact(await res.json());
       } catch (e) {
         out.textContent = 'request failed: ' + e;
       } finally {
@@ -82,11 +595,7 @@
       }
     });
 
-    function esc(s) {
-      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function render(report) {
+    function renderImpact(report) {
       const out = document.getElementById('impactOut');
       let html = '<p><b>' + esc(report.service) + '</b> ' + esc(report.oldVersion)
         + ' → ' + esc(report.newVersion) + ' — ' + esc(String(report.findings.length))
@@ -121,6 +630,8 @@
       }
       out.innerHTML = html;
     }
+
+    setServiceLabels();
   </script>
 </body>
 </html>

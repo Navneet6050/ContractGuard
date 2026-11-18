@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS services (
     slug        VARCHAR(255) NOT NULL UNIQUE,
     title       VARCHAR(255) NOT NULL,
     owner_team  VARCHAR(255),
+    description VARCHAR(1024),
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS spec_versions (
     effective_json   CLOB NOT NULL,
     state            VARCHAR(32) NOT NULL CHECK (state IN ('published', 'superseded')),
     published_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    published_by     VARCHAR(255) NOT NULL DEFAULT 'anonymous',
     CONSTRAINT uq_spec_version UNIQUE (service_id, version)
 );
 
@@ -36,12 +38,13 @@ CREATE TABLE IF NOT EXISTS publication_attempts (
                         'blocked', 'published', 'overridden_published',
                         'abandoned', 'failed')),
     breaking_count    INT NOT NULL DEFAULT 0,
-    required_action   VARCHAR(64),
+    required_action   VARCHAR(255),
     created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     decided_at        TIMESTAMP,
     decided_by        VARCHAR(255),
     justification     CLOB,
-    note              CLOB
+    note              CLOB,
+    decision_json     CLOB
 );
 
 CREATE TABLE IF NOT EXISTS findings (
@@ -111,3 +114,26 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     delivered_at  TIMESTAMP
 );
+
+-- Append-only audit trail for SERVICE-level and attempt-level actions (registration,
+-- uploads, dry-run checks, rejections, decisions). attempt_transitions stays the
+-- attempt state log; audit_events is the human-readable who/what/why record.
+CREATE TABLE IF NOT EXISTS audit_events (
+    id            IDENTITY PRIMARY KEY,
+    service       VARCHAR(255),
+    version       VARCHAR(64),
+    attempt_id    BIGINT,
+    action        VARCHAR(64) NOT NULL,
+    decision      VARCHAR(32),
+    actor         VARCHAR(255) NOT NULL DEFAULT 'anonymous',
+    justification CLOB,
+    details       CLOB,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Columns added after the kit shipped; IF NOT EXISTS keeps older local databases
+-- (data/contractguard.mv.db) upgradeable in place.
+ALTER TABLE services ADD COLUMN IF NOT EXISTS description VARCHAR(1024);
+ALTER TABLE spec_versions ADD COLUMN IF NOT EXISTS published_by VARCHAR(255) NOT NULL DEFAULT 'anonymous';
+ALTER TABLE publication_attempts ADD COLUMN IF NOT EXISTS decision_json CLOB;
+ALTER TABLE publication_attempts ALTER COLUMN required_action VARCHAR(255);

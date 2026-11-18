@@ -1,0 +1,18 @@
+# Test overrides: in-memory H2 (never touches ./data), starter-kit import disabled so
+# tests start from a clean registry and stay independent of a locally running server.
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+
+contractguard:
+  webhook-url: http://localhost:9/contractguard-test
+  consumers-dir: consumers
+  specs-dir: specs
+  kit-import:
+    enabled: false

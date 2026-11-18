@@ -19,6 +19,10 @@ contractguard:
   webhook-url: ${WEBHOOK_URL:http://localhost:9900/contractguard}
   # Read-only starter-kit consumer declarations (loaded at startup, never modified).
   consumers-dir: ${CONSUMERS_DIR:consumers}
+  # Read-only starter-kit specifications, imported once through the real pipeline.
+  specs-dir: ${SPECS_DIR:specs}
+  kit-import:
+    enabled: ${KIT_IMPORT:true}
 
 logging:
   level:
