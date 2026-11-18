@@ -34,19 +34,78 @@ public final class CompatibilityEngine {
     /** Constraint keys with directional tightness semantics (see {@link #tightness}). */
     private static final List<String> CONSTRAINT_KEYS = List.of(
             "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems",
-            "pattern", "multipleOf", "exclusiveMinimum", "exclusiveMaximum", "uniqueItems");
+            "minProperties", "maxProperties",
+            "pattern", "multipleOf", "format", "exclusiveMinimum", "exclusiveMaximum", "uniqueItems");
 
-    /** +1 = new value is tighter, -1 = looser, 0 = no directional change. */
+    /** Sentinel for constraint changes whose direction cannot be determined. */
+    private static final int UNKNOWN_DIRECTION = Integer.MIN_VALUE;
+
+    /** +1 = new value is tighter, -1 = looser, 0 = no directional change, UNKNOWN = unordered. */
     private static int tightness(String key, JsonNode oldValue, JsonNode newValue) {
+        boolean bothNumbers = oldValue.isNumber() && newValue.isNumber();
         return switch (key) {
-            case "minimum", "minLength", "minItems" -> Double.compare(num(newValue), num(oldValue));
-            case "maximum", "maxLength", "maxItems" -> Double.compare(num(oldValue), num(newValue));
-            case "pattern", "multipleOf" -> 1;
-            case "exclusiveMinimum", "exclusiveMaximum", "uniqueItems" ->
-                    newValue.booleanValue() && !oldValue.booleanValue() ? 1
-                            : oldValue.booleanValue() && !newValue.booleanValue() ? -1 : 0;
+            case "minimum", "minLength", "minItems", "minProperties" -> Double.compare(num(newValue), num(oldValue));
+            case "maximum", "maxLength", "maxItems", "maxProperties" -> Double.compare(num(oldValue), num(newValue));
+            // OpenAPI 3.1 writes exclusive bounds as numbers, 3.0 as booleans beside min/max
+            case "exclusiveMinimum" -> bothNumbers
+                    ? Double.compare(num(newValue), num(oldValue))
+                    : booleanTightness(oldValue, newValue);
+            case "exclusiveMaximum" -> bothNumbers
+                    ? Double.compare(num(oldValue), num(newValue))
+                    : booleanTightness(oldValue, newValue);
+            // Regular languages are not ordered: a pattern change is directional only in
+            // the trivial all-accepting case; otherwise the direction is unknowable.
+            case "pattern" -> isAcceptAll(newValue) ? -1 : isAcceptAll(oldValue) ? 1 : UNKNOWN_DIRECTION;
+            // For multiples, divisibility decides the direction (multiples of 4 are a
+            // subset of multiples of 2); anything else is unordered.
+            case "multipleOf" -> multipleOfTightness(oldValue, newValue);
+            // Format vocabularies are unordered name sets.
+            case "format" -> UNKNOWN_DIRECTION;
+            case "uniqueItems" -> booleanTightness(oldValue, newValue);
             default -> 0;
         };
+    }
+
+    private static int booleanTightness(JsonNode oldValue, JsonNode newValue) {
+        return newValue.booleanValue() && !oldValue.booleanValue() ? 1
+                : oldValue.booleanValue() && !newValue.booleanValue() ? -1 : 0;
+    }
+
+    private static int multipleOfTightness(JsonNode oldValue, JsonNode newValue) {
+        if (!(oldValue.isNumber() && newValue.isNumber())) {
+            return UNKNOWN_DIRECTION;
+        }
+        try {
+            java.math.BigDecimal oldM = oldValue.decimalValue();
+            java.math.BigDecimal newM = newValue.decimalValue();
+            if (oldM.signum() <= 0 || newM.signum() <= 0) {
+                return UNKNOWN_DIRECTION;
+            }
+            boolean newDividesOld = oldM.remainder(newM).signum() == 0;
+            boolean oldDividesNew = newM.remainder(oldM).signum() == 0;
+            if (newDividesOld && oldDividesNew) {
+                return 0; // same multiples (e.g. 4 vs 4.0): no directional change
+            }
+            if (newDividesOld) {
+                return -1; // old multiples are a subset of new multiples: loosened
+            }
+            if (oldDividesNew) {
+                return 1; // new multiples are a subset of old multiples: tightened
+            }
+            // neither divides the other (e.g. 3 -> 5): the accepted sets are unordered
+            return UNKNOWN_DIRECTION;
+        } catch (ArithmeticException e) {
+            return UNKNOWN_DIRECTION;
+        }
+    }
+
+    /** True for trivial all-accepting patterns (".*", optionally anchored). */
+    private static boolean isAcceptAll(JsonNode pattern) {
+        if (pattern == null || !pattern.isString()) {
+            return false;
+        }
+        String value = pattern.stringValue();
+        return value.matches("^\\^?\\.\\*\\$?$");
     }
 
     private static double num(JsonNode node) {
@@ -219,11 +278,12 @@ public final class CompatibilityEngine {
         JsonNode oldSchema = oldEnvelope.get("schema");
         JsonNode newSchema = newEnvelope.get("schema");
         if (isNullish(oldSchema) && !isNullish(newSchema)) {
-            out.add(new CompatibilityFinding("REQ.SCHEMA_ADDED", Severity.INFO, "PARAM",
+            // request side: a documented schema narrows what may be sent (asymmetry)
+            out.add(new CompatibilityFinding("REQ.SCHEMA_ADDED", Severity.BREAKING, "PARAM",
                     op.verb(), path, locationKey, null,
                     "parameter schema added", null, JsonWriter.write(newSchema)));
         } else if (!isNullish(oldSchema) && isNullish(newSchema)) {
-            out.add(new CompatibilityFinding("REQ.SCHEMA_REMOVED", Severity.BREAKING, "PARAM",
+            out.add(new CompatibilityFinding("REQ.SCHEMA_REMOVED", Severity.INFO, "PARAM",
                     op.verb(), path, locationKey, null,
                     "parameter schema removed", JsonWriter.write(oldSchema), null));
         } else if (!isNullish(oldSchema)) {
@@ -336,13 +396,19 @@ public final class CompatibilityEngine {
             return;
         }
         if (oldNull) {
-            out.add(new CompatibilityFinding(side.prefix() + ".SCHEMA_ADDED", Severity.INFO,
+            // Request side: documenting a schema where none existed NARROWS the
+            // documented acceptance space (mirrors the type-narrowing rule, which
+            // treats "no type" as the widest set). Response side: a newly documented
+            // promise is additive, so it stays informational.
+            out.add(new CompatibilityFinding(side.prefix() + ".SCHEMA_ADDED",
+                    side == SchemaSide.REQUEST ? Severity.BREAKING : Severity.INFO,
                     side.name(), op.verb(), path, locationKey, fieldPath,
                     "schema added where none was documented", null, JsonWriter.write(newNode)));
             return;
         }
         if (newNull) {
-            out.add(new CompatibilityFinding(side.prefix() + ".SCHEMA_REMOVED", Severity.BREAKING,
+            out.add(new CompatibilityFinding(side.prefix() + ".SCHEMA_REMOVED",
+                    side == SchemaSide.REQUEST ? Severity.INFO : Severity.BREAKING,
                     side.name(), op.verb(), path, locationKey, fieldPath,
                     "documented schema removed", JsonWriter.write(oldNode), null));
             return;
@@ -363,6 +429,7 @@ public final class CompatibilityEngine {
         compareDefault(op, path, locationKey, side, oldNode, newNode, fieldPath, out);
         compareProperties(op, path, locationKey, side, oldNode, newNode, fieldPath, out);
         compareItems(op, path, locationKey, side, oldNode, newNode, fieldPath, out);
+        compareAdditionalProperties(op, path, locationKey, side, oldNode, newNode, fieldPath, out);
         compareCompositions(op, path, locationKey, side, oldNode, newNode, fieldPath, out);
     }
 
@@ -469,10 +536,12 @@ public final class CompatibilityEngine {
                 direction = tightness(key, oldValue, newValue);
                 verb = "changed";
             } else if (newPresent) {
-                direction = 1;
+                // adding an all-accepting pattern constrains nothing
+                direction = "pattern".equals(key) && isAcceptAll(newValue) ? 0 : 1;
                 verb = "added";
             } else {
-                direction = -1;
+                // removing an all-accepting pattern releases nothing
+                direction = "pattern".equals(key) && isAcceptAll(oldValue) ? 0 : -1;
                 verb = "removed";
             }
             if (direction == 0) {
@@ -480,18 +549,40 @@ public final class CompatibilityEngine {
             }
             String detail = "'" + key + "' " + verb
                     + (newPresent ? ": " + JsonWriter.write(newValue) : "")
-                    + (oldPresent && newPresent ? " (was " + JsonWriter.write(oldValue) + ")" : "");
-            // Directional codes, mirroring the enum/type rules: tightening breaks senders
-            // (request), loosening breaks strict readers (response).
-            boolean tightened = direction > 0;
-            boolean request = side == SchemaSide.REQUEST;
-            out.add(new CompatibilityFinding(
-                    request ? (tightened ? "REQ.CONSTRAINT_TIGHTENED" : "REQ.CONSTRAINT_LOOSENED")
-                            : (tightened ? "RESP.CONSTRAINT_TIGHTENED" : "RESP.CONSTRAINT_LOOSENED"),
-                    tightened == request ? Severity.BREAKING : Severity.INFO,
-                    side.name(), op.verb(), path, locationKey, fieldPath, detail,
-                    JsonWriter.write(oldValue), JsonWriter.write(newValue)));
+                    + (oldPresent && newPresent ? " (was " + JsonWriter.write(oldValue) : "");
+            if (oldPresent && newPresent) {
+                detail += ")";
+            }
+            if (direction == UNKNOWN_DIRECTION) {
+                // The values differ but neither is a subset of the other — flag the
+                // change explicitly instead of guessing a direction (which used to
+                // mislabel loosened patterns as tightenings).
+                out.add(new CompatibilityFinding(
+                        side == SchemaSide.REQUEST ? "REQ.CONSTRAINT_CHANGED" : "RESP.CONSTRAINT_CHANGED",
+                        Severity.INFO, side.name(), op.verb(), path, locationKey, fieldPath,
+                        detail + " (direction cannot be determined)",
+                        JsonWriter.write(oldValue), JsonWriter.write(newValue)));
+                continue;
+            }
+            emitConstraintDirection(op, path, locationKey, side, fieldPath,
+                    direction > 0, detail, JsonWriter.write(oldValue), JsonWriter.write(newValue), out);
         }
+    }
+
+    /**
+     * Directional constraint finding: tightening narrows the request side (BREAKING)
+     * or strengthens the response promise (INFO); loosening is the mirror image.
+     */
+    private void emitConstraintDirection(LocationKeys.Operation op, String path, String locationKey,
+                                         SchemaSide side, String fieldPath, boolean tightened,
+                                         String detail, String oldJson, String newJson,
+                                         List<CompatibilityFinding> out) {
+        boolean request = side == SchemaSide.REQUEST;
+        out.add(new CompatibilityFinding(
+                request ? (tightened ? "REQ.CONSTRAINT_TIGHTENED" : "REQ.CONSTRAINT_LOOSENED")
+                        : (tightened ? "RESP.CONSTRAINT_TIGHTENED" : "RESP.CONSTRAINT_LOOSENED"),
+                tightened == request ? Severity.BREAKING : Severity.INFO,
+                side.name(), op.verb(), path, locationKey, fieldPath, detail, oldJson, newJson));
     }
 
     private void compareDefault(LocationKeys.Operation op, String path, String locationKey,
@@ -541,6 +632,9 @@ public final class CompatibilityEngine {
         renames.values().forEach(added::remove);
 
         for (Map.Entry<String, String> rename : renames.entrySet()) {
+            if (!applicableOnSide(side, oldMap.get(rename.getKey()), newMap.get(rename.getValue()))) {
+                continue; // the flagged side never carries this property on the wire
+            }
             emit(op, path, locationKey, side, childPath(fieldPath, rename.getKey()),
                     "REQ.PROPERTY_RENAMED", Severity.BREAKING, "RESP.PROPERTY_RENAMED", Severity.BREAKING,
                     "property '" + rename.getKey() + "' renamed to '" + rename.getValue()
@@ -549,12 +643,18 @@ public final class CompatibilityEngine {
                     JsonWriter.write(newMap.get(rename.getValue())), out);
         }
         for (String name : removed) {
+            if (!applicableOnSide(side, oldMap.get(name), null)) {
+                continue;
+            }
             emit(op, path, locationKey, side, childPath(fieldPath, name),
                     "REQ.PROPERTY_REMOVED", Severity.BREAKING, "RESP.PROPERTY_REMOVED", Severity.BREAKING,
                     "property '" + name + "' removed",
                     JsonWriter.write(oldMap.get(name)), null, out);
         }
         for (String name : added) {
+            if (!applicableOnSide(side, null, newMap.get(name))) {
+                continue;
+            }
             emit(op, path, locationKey, side, childPath(fieldPath, name),
                     "REQ.PROPERTY_ADDED", Severity.INFO, "RESP.PROPERTY_ADDED", Severity.INFO,
                     "property '" + name + "' added",
@@ -564,17 +664,32 @@ public final class CompatibilityEngine {
         // recurse into common properties
         for (String name : oldMap.keySet()) {
             JsonNode newChild = newMap.get(name);
-            if (newChild != null) {
+            if (newChild != null && applicableOnSide(side, oldMap.get(name), newChild)) {
                 diffSchemaNode(op, path, locationKey, side, oldMap.get(name), newChild,
                         childPath(fieldPath, name), out);
             }
         }
 
-        compareRequired(op, path, locationKey, side, oldNode, newNode, fieldPath, renames, out);
+        compareRequired(op, path, locationKey, side, oldNode, newNode, oldMap, newMap, fieldPath, renames, out);
+    }
+
+    /**
+     * OAS readOnly/writeOnly: a readOnly property is server-managed — it never
+     * appears in accepted requests; a writeOnly property never appears in responses.
+     * A side only hears about the property if it WAS or IS applicable to it (so the
+     * flag itself appearing or disappearing stays visible as the property-level
+     * change it is).
+     */
+    private static boolean applicableOnSide(SchemaSide side, JsonNode oldSchema, JsonNode newSchema) {
+        String flag = side == SchemaSide.REQUEST ? "readOnly" : "writeOnly";
+        boolean oldApplicable = oldSchema != null && !boolValue(oldSchema, flag);
+        boolean newApplicable = newSchema != null && !boolValue(newSchema, flag);
+        return oldApplicable || newApplicable;
     }
 
     private void compareRequired(LocationKeys.Operation op, String path, String locationKey,
                                  SchemaSide side, JsonNode oldNode, JsonNode newNode,
+                                 Map<String, JsonNode> oldProps, Map<String, JsonNode> newProps,
                                  String fieldPath, Map<String, String> renames,
                                  List<CompatibilityFinding> out) {
         Set<String> rawOldRequired = requiredSet(oldNode);
@@ -590,6 +705,15 @@ public final class CompatibilityEngine {
             return;
         }
         for (String name : difference(newRequired, oldRequired)) {
+            // a required readOnly property is never actually demanded of senders
+            JsonNode newProp = newProps.get(name);
+            if (side == SchemaSide.REQUEST && newProp != null && boolValue(newProp, "readOnly")) {
+                continue;
+            }
+            JsonNode oldProp = oldProps.get(name);
+            if (side == SchemaSide.RESPONSE && oldProp != null && boolValue(oldProp, "writeOnly")) {
+                continue;
+            }
             emit(op, path, locationKey, side, childPath(fieldPath, name),
                     "REQ.REQUIRED_ADDED", Severity.BREAKING, "RESP.REQUIRED_ADDED", Severity.INFO,
                     "'" + name + "' added to required list"
@@ -597,6 +721,14 @@ public final class CompatibilityEngine {
                     null, null, out);
         }
         for (String name : difference(oldRequired, newRequired)) {
+            JsonNode oldProp = oldProps.get(name);
+            if (side == SchemaSide.REQUEST && oldProp != null && boolValue(oldProp, "readOnly")) {
+                continue;
+            }
+            JsonNode newProp = newProps.get(name);
+            if (side == SchemaSide.RESPONSE && newProp != null && boolValue(newProp, "writeOnly")) {
+                continue;
+            }
             emit(op, path, locationKey, side, childPath(fieldPath, name),
                     "REQ.REQUIRED_REMOVED", Severity.INFO, "RESP.REQUIRED_REMOVED", Severity.BREAKING,
                     "'" + name + "' removed from required list"
@@ -610,12 +742,93 @@ public final class CompatibilityEngine {
                               String fieldPath, List<CompatibilityFinding> out) {
         JsonNode oldItems = oldNode.get("items");
         JsonNode newItems = newNode.get("items");
-        if (oldItems != null && oldItems.isObject() && newItems != null && newItems.isObject()) {
-            diffSchemaNode(op, path, locationKey, side, oldItems, newItems,
-                    fieldPath + "[]", out);
+        boolean oldPresent = oldItems != null && !isNullish(oldItems);
+        boolean newPresent = newItems != null && !isNullish(newItems);
+        if (oldPresent && newPresent) {
+            if (oldItems.isObject() && newItems.isObject()) {
+                diffSchemaNode(op, path, locationKey, side, oldItems, newItems,
+                        fieldPath + "[]", out);
+            }
+            return;
+        }
+        if (!oldPresent && !newPresent) {
+            return;
+        }
+        // An element contract appearing or disappearing is a directional change, not a
+        // no-op: on the request side it narrows/widens what arrays may be sent, on the
+        // response side it strengthens/weakens the element guarantee.
+        if (newPresent) {
+            emitConstraintDirection(op, path, locationKey, side, fieldPath, true,
+                    "array element contract added: " + JsonWriter.write(newItems),
+                    null, JsonWriter.write(newItems), out);
+        } else {
+            emitConstraintDirection(op, path, locationKey, side, fieldPath, false,
+                    "array element contract removed",
+                    JsonWriter.write(oldItems), null, out);
         }
     }
 
+    /**
+     * additionalProperties: false forbids extra keys, a schema object constrains them,
+     * true (or absence) allows anything. Transitions along that ladder are directional
+     * (tightening/loosening); two object forms are diffed recursively like schemas.
+     */
+    private void compareAdditionalProperties(LocationKeys.Operation op, String path,
+                                             String locationKey, SchemaSide side,
+                                             JsonNode oldNode, JsonNode newNode,
+                                             String fieldPath, List<CompatibilityFinding> out) {
+        JsonNode oldValue = oldNode.get("additionalProperties");
+        JsonNode newValue = newNode.get("additionalProperties");
+        boolean oldPresent = oldValue != null && !isNullish(oldValue);
+        boolean newPresent = newValue != null && !isNullish(newValue);
+        if (oldPresent && newPresent && oldValue.isObject() && newValue.isObject()) {
+            if (!oldValue.equals(newValue)) {
+                diffSchemaNode(op, path, locationKey, side, oldValue, newValue,
+                        fieldPath + "[*]", out);
+            }
+            return;
+        }
+        if (oldPresent && newPresent && oldValue.equals(newValue)) {
+            return;
+        }
+        if (!oldPresent && !newPresent) {
+            return;
+        }
+        int oldRank = additionalRank(oldValue, oldPresent);
+        int newRank = additionalRank(newValue, newPresent);
+        if (oldRank == newRank) {
+            return; // e.g. absent ↔ true: both mean "any extra properties allowed"
+        }
+        boolean tightened = newRank < oldRank;
+        String detail = "'additionalProperties' "
+                + (tightened ? "tightened: extra properties are now constrained"
+                             : "loosened: extra properties are no longer constrained")
+                + (newPresent ? ": " + JsonWriter.write(newValue) : " (constraint removed)");
+        emitConstraintDirection(op, path, locationKey, side, fieldPath, tightened, detail,
+                JsonWriter.write(oldPresent ? oldValue : null),
+                JsonWriter.write(newPresent ? newValue : null), out);
+    }
+
+    /** 0 = false (forbids extra keys), 1 = schema object, 2 = true or absent (unconstrained). */
+    private static int additionalRank(JsonNode node, boolean present) {
+        if (!present) {
+            return 2;
+        }
+        if (node.isBoolean()) {
+            return node.booleanValue() ? 2 : 0;
+        }
+        return 1;
+    }
+
+    /**
+     * Composition comparison at BRANCH granularity: branches that are deep-equal cancel
+     * out (reordered anyOf/oneOf branches are cosmetic, not changes), the leftovers are
+     * paired positionally when the list sizes match, and otherwise reported as branch
+     * additions/removals. Branch removal narrows the documented space (request:
+     * BREAKING, response: tighter promise = INFO); branch addition widens it (request:
+     * INFO, response: widened promise = BREAKING). oneOf exclusivity is not analyzed —
+     * its acceptance direction matches anyOf's, which is what the gate needs.
+     */
     private void compareCompositions(LocationKeys.Operation op, String path, String locationKey,
                                      SchemaSide side, JsonNode oldNode, JsonNode newNode,
                                      String fieldPath, List<CompatibilityFinding> out) {
@@ -625,22 +838,86 @@ public final class CompatibilityEngine {
             if (oldList == null && newList == null) {
                 continue;
             }
-            if (oldList != null && oldList.isArray() && newList != null && newList.isArray()
-                    && oldList.size() == newList.size()) {
-                for (int i = 0; i < oldList.size(); i++) {
-                    JsonNode oldElement = oldList.get(i);
-                    JsonNode newElement = newList.get(i);
-                    if (oldElement.isObject() && newElement.isObject()) {
-                        diffSchemaNode(op, path, locationKey, side, oldElement, newElement,
-                                fieldPath + "[" + i + "]", out);
+            if (!isArray(oldList) || !isArray(newList)) {
+                if (oldList != null && newList != null) {
+                    // one side malformed (non-array): only an honest structural marker
+                    out.add(new CompatibilityFinding(side.prefix() + ".COMPOSITION_CHANGED",
+                            Severity.INFO, side.name(), op.verb(), path, locationKey, fieldPath,
+                            "'" + key + "' composition list changed", null, null));
+                }
+                continue;
+            }
+            List<JsonNode> oldBranches = toArray(oldList);
+            List<JsonNode> newBranches = toArray(newList);
+
+            // cancel deep-equal branches (handles reordering and moved definitions)
+            Map<String, List<Integer>> newRemaining = new LinkedHashMap<>();
+            for (int j = 0; j < newBranches.size(); j++) {
+                newRemaining.computeIfAbsent(JsonWriter.write(newBranches.get(j)), k -> new ArrayList<>())
+                        .add(j);
+            }
+            List<Integer> oldLeftover = new ArrayList<>();
+            for (int i = 0; i < oldBranches.size(); i++) {
+                List<Integer> candidates = newRemaining.get(JsonWriter.write(oldBranches.get(i)));
+                if (candidates != null && !candidates.isEmpty()) {
+                    candidates.remove(candidates.size() - 1);
+                    if (candidates.isEmpty()) {
+                        newRemaining.remove(JsonWriter.write(oldBranches.get(i)));
+                    }
+                } else {
+                    oldLeftover.add(i);
+                }
+            }
+            List<Integer> newLeftover = new ArrayList<>();
+            for (List<Integer> indices : newRemaining.values()) {
+                newLeftover.addAll(indices);
+            }
+            newLeftover.sort(Integer::compareTo);
+
+            if (oldBranches.size() == newBranches.size()) {
+                // same size: pair leftover old/new branches positionally
+                for (int p = 0; p < Math.min(oldLeftover.size(), newLeftover.size()); p++) {
+                    JsonNode oldBranch = oldBranches.get(oldLeftover.get(p));
+                    JsonNode newBranch = newBranches.get(newLeftover.get(p));
+                    if (oldBranch.isObject() && newBranch.isObject()) {
+                        diffSchemaNode(op, path, locationKey, side, oldBranch, newBranch,
+                                fieldPath + "[" + oldLeftover.get(p) + "]", out);
                     }
                 }
-            } else if (oldList != null && newList != null) {
-                out.add(new CompatibilityFinding(side.prefix() + ".COMPOSITION_CHANGED", Severity.INFO,
-                        side.name(), op.verb(), path, locationKey, fieldPath,
-                        "'" + key + "' composition list changed", null, null));
+            } else {
+                // size changed: leftovers are genuinely added/removed alternatives
+                for (int i : oldLeftover) {
+                    out.add(new CompatibilityFinding(
+                            side == SchemaSide.REQUEST ? "REQ.COMPOSITION_BRANCH_REMOVED"
+                                    : "RESP.COMPOSITION_BRANCH_REMOVED",
+                            side == SchemaSide.REQUEST ? Severity.BREAKING : Severity.INFO,
+                            side.name(), op.verb(), path, locationKey, fieldPath,
+                            "'" + key + "' alternative removed",
+                            JsonWriter.write(oldBranches.get(i)), null));
+                }
+                for (int j : newLeftover) {
+                    out.add(new CompatibilityFinding(
+                            side == SchemaSide.REQUEST ? "REQ.COMPOSITION_BRANCH_ADDED"
+                                    : "RESP.COMPOSITION_BRANCH_ADDED",
+                            side == SchemaSide.REQUEST ? Severity.INFO : Severity.BREAKING,
+                            side.name(), op.verb(), path, locationKey, fieldPath,
+                            "'" + key + "' alternative added",
+                            null, JsonWriter.write(newBranches.get(j))));
+                }
             }
         }
+    }
+
+    private static boolean isArray(JsonNode node) {
+        return node != null && node.isArray();
+    }
+
+    private static List<JsonNode> toArray(JsonNode arrayNode) {
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode element : arrayNode) {
+            out.add(element);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ helpers

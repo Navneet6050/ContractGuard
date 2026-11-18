@@ -50,7 +50,8 @@ public class ConsumerImpactAnalyzer {
      * handling, which files cannot declare → declared readers land in POSSIBLE.
      */
     private static final Set<String> WIDENING_CODES = Set.of(
-            "RESP.ENUM_WIDENED", "RESP.TYPE_WIDENED", "RESP.CONSTRAINT_LOOSENED", "RESP.NULLABLE_ADDED");
+            "RESP.ENUM_WIDENED", "RESP.TYPE_WIDENED", "RESP.CONSTRAINT_LOOSENED", "RESP.NULLABLE_ADDED",
+            "RESP.COMPOSITION_BRANCH_ADDED");
 
     private static final Pattern RENAME_IN_DETAIL = Pattern.compile("'(.+?)' renamed to '(.+?)'");
 

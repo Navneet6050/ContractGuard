@@ -76,9 +76,9 @@ public class KitSeeder implements ApplicationRunner {
 
     private void seedService(Path serviceDir, String slug) {
         if (!store.serviceExists(slug)) {
-            store.insertService(slug, slug, null, "starter kit demo service");
-            store.insertAuditEvent(slug, null, null, "SERVICE_REGISTERED", "registered",
-                    "kit-importer", null, "service registered during starter kit import");
+            store.registerService(slug, slug, null, "starter kit demo service", "kit-importer",
+                    new RegistryStore.AuditEntry("SERVICE_REGISTERED", "registered", null,
+                            "service registered during starter kit import"));
         }
         Map<String, Integer> outcomes = new LinkedHashMap<>();
         List<String> fileNotes = new java.util.ArrayList<>();

@@ -457,4 +457,469 @@ class SyntheticCompatibilityTest {
         assertThat(findings.get(0).code()).isEqualTo("REQ.DEFAULT_CHANGED");
         assertThat(findings.get(0).severity()).isEqualTo(Severity.INFO);
     }
+
+    // ------------------------------------------------------- schema added/removed asymmetry
+
+    @Test
+    @DisplayName("SCHEMA_ADDED/REMOVED follow the asymmetry: a documented request schema narrows (breaking), a documented response schema strengthens (info)")
+    void schemaAddRemoveAsymmetry() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json: {}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json: {}
+                """;
+        String newY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, required: [x], properties: {x: {type: string}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, required: [y], properties: {y: {type: string}}}
+                """;
+        List<CompatibilityFinding> added = diff(oldY, newY);
+        assertThat(added).filteredOn(f -> f.code().equals("REQ.SCHEMA_ADDED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+        assertThat(added).filteredOn(f -> f.code().equals("RESP.SCHEMA_ADDED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+
+        List<CompatibilityFinding> removed = diff(newY, oldY);
+        assertThat(removed).filteredOn(f -> f.code().equals("REQ.SCHEMA_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(removed).filteredOn(f -> f.code().equals("RESP.SCHEMA_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+    }
+
+    // ------------------------------------------------------- constraint directions
+
+    @Test
+    @DisplayName("pattern changes report an explicit unknown direction; only provable subsets get a direction")
+    void patternDirection() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {code: {type: string, pattern: '^A[0-9]{3}$'}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {code: {type: string, pattern: '^B[0-9]{3}$'}}}
+                """;
+        // two unrelated patterns: direction is unknowable — never mislabeled as tightening
+        String newY = oldY.replace("^A[0-9]{3}$", "^A[0-9]{4}$").replace("^B[0-9]{3}$", "^B[0-9]{4}$");
+        List<CompatibilityFinding> findings = diff(oldY, newY);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.INFO);
+                    assertThat(f.detail()).contains("pattern").contains("direction cannot be determined");
+                });
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(findings).noneSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // .* accepts everything: any concrete pattern is provably tighter
+        String allAccepted = oldY.replace("^A[0-9]{3}$", ".*").replace("^B[0-9]{3}$", ".*");
+        List<CompatibilityFinding> tightened = diff(allAccepted, oldY);
+        assertThat(tightened).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+        assertThat(tightened).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        List<CompatibilityFinding> loosened = diff(oldY, allAccepted);
+        assertThat(loosened).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_LOOSENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // a concrete pattern added over an unconstrained string is a real tightening
+        String unconstrained = oldY.replace(", pattern: '^A[0-9]{3}$'", "")
+                .replace(", pattern: '^B[0-9]{3}$'", "");
+        List<CompatibilityFinding> addedConcrete = diff(unconstrained, oldY);
+        assertThat(addedConcrete).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // an all-accepting pattern constrains nothing: adding or removing it is a no-op
+        // (never a false tightening or a false response-side breaking loosening)
+        String acceptAll = oldY.replace("pattern: '^A[0-9]{3}$'", "pattern: '.*'")
+                .replace("pattern: '^B[0-9]{3}$'", "pattern: '.*'");
+        assertThat(diff(unconstrained, acceptAll)).isEmpty();
+        assertThat(diff(acceptAll, unconstrained)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("multipleOf direction follows divisibility; unrelated multiples report unknown direction")
+    void multipleOfDirection() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {n: {type: integer, multipleOf: 4}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {m: {type: integer, multipleOf: 2}}}
+                """;
+        // 4 -> 2 on requests: every multiple of 4 is a multiple of 2, so the accepted
+        // space grew (loosening, info) — previously mislabeled as a tightening
+        String loosened = oldY.replace("multipleOf: 4", "multipleOf: 2");
+        List<CompatibilityFinding> loosenedFindings = diff(oldY, loosened);
+        assertThat(loosenedFindings).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_LOOSENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(loosenedFindings).noneSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // 2 -> 4 on responses: the promise tightened (subset), which is info
+        String tightened = oldY.replace("multipleOf: 2", "multipleOf: 4");
+        List<CompatibilityFinding> tightenedFindings = diff(oldY, tightened);
+        assertThat(tightenedFindings).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(tightenedFindings).noneSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+
+        // 3 -> 5 (and 2 -> 5): neither divides the other — explicit unknown direction
+        String unrelated = oldY.replace("multipleOf: 4", "multipleOf: 3")
+                .replace("multipleOf: 2", "multipleOf: 5");
+        List<CompatibilityFinding> unknown = diff(oldY, unrelated);
+        assertThat(unknown).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(unknown).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+    }
+
+    @Test
+    @DisplayName("format changes are visible: renamed formats report unknown direction, added/removed are directional")
+    void formatSemantics() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {when: {type: string, format: date}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {when: {type: string, format: date}}}
+                """;
+        String renamed = oldY.replace("format: date", "format: uuid");
+        List<CompatibilityFinding> findings = diff(oldY, renamed);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_CHANGED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+
+        String oldPlain = HEADER + """
+                  /b:
+                    get:
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {when: {type: string}}}
+                """;
+        String newFormatted = oldPlain.replace("{type: string}}", "{type: string, format: date}}");
+        List<CompatibilityFinding> added = diff(oldPlain, newFormatted);
+        assertThat(added).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        List<CompatibilityFinding> removed = diff(newFormatted, oldPlain);
+        assertThat(removed).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_LOOSENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+    }
+
+    @Test
+    @DisplayName("array element contracts are directional: added items narrow requests (breaking), removed items weaken response promises (breaking)")
+    void itemsAddRemove() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: array}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: array, items: {type: string}}
+                """;
+        String newY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: array, items: {type: string}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: array}
+                """;
+        List<CompatibilityFinding> findings = diff(oldY, newY);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("array element contract added");
+                });
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_LOOSENED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("array element contract removed");
+                });
+        assertThat(findings).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("additionalProperties transitions are directional and object forms are diffed recursively")
+    void additionalPropertiesSemantics() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, additionalProperties: true, properties: {x: {type: string}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, additionalProperties: false, properties: {x: {type: string}}}
+                """;
+        // request: extra keys no longer allowed -> tightening (breaking);
+        // response: extra keys now allowed -> loosening (breaking)
+        String newY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, additionalProperties: false, properties: {x: {type: string}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, additionalProperties: true, properties: {x: {type: string}}}
+                """;
+        List<CompatibilityFinding> findings = diff(oldY, newY);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.CONSTRAINT_TIGHTENED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("additionalProperties");
+                });
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.CONSTRAINT_LOOSENED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+        assertThat(findings).hasSize(2);
+
+        // absent and true both mean "any extra properties": equivalent
+        String noFlag = HEADER + """
+                  /b:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {x: {type: string}}}
+                      responses: {'200': {description: ok}}
+                """;
+        String trueFlag = noFlag.replace("{type: object, properties:",
+                "{type: object, additionalProperties: true, properties:");
+        assertThat(diff(noFlag, trueFlag)).isEmpty();
+        assertThat(diff(trueFlag, noFlag)).isEmpty();
+
+        // object forms: the schema for extra keys is diffed recursively
+        String oldObject = noFlag.replace("{type: object, properties:",
+                "{type: object, additionalProperties: {type: string}, properties:");
+        String newObject = noFlag.replace("{type: object, properties:",
+                "{type: object, additionalProperties: {type: number}, properties:");
+        List<CompatibilityFinding> recursive = diff(oldObject, newObject);
+        assertThat(recursive).filteredOn(f -> f.code().equals("REQ.TYPE_NARROWED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.fieldPath()).isEqualTo("[*]");
+                });
+    }
+
+    @Test
+    @DisplayName("anyOf branch reordering is cosmetic; branch removal narrows requests (breaking) and branch addition widens responses (breaking)")
+    void compositionBranchSemantics() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {v: {anyOf: [{type: string}, {type: number}]}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {w: {anyOf: [{type: string}, {type: number}]}}}
+                """;
+        // same branches, different order: previously spurious narrowing/widening pairs
+        String reordered = oldY
+                .replace("properties: {v: {anyOf: [{type: string}, {type: number}]}}",
+                        "properties: {v: {anyOf: [{type: number}, {type: string}]}}")
+                .replace("properties: {w: {anyOf: [{type: string}, {type: number}]}}",
+                        "properties: {w: {anyOf: [{type: number}, {type: string}]}}");
+        assertThat(diff(oldY, reordered)).isEmpty();
+
+        // number alternative removed on both sides
+        String delta = oldY
+                .replace("properties: {v: {anyOf: [{type: string}, {type: number}]}}",
+                        "properties: {v: {anyOf: [{type: string}]}}")
+                .replace("properties: {w: {anyOf: [{type: string}, {type: number}]}}",
+                        "properties: {w: {anyOf: [{type: string}]}}");
+        List<CompatibilityFinding> findings = diff(oldY, delta);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.COMPOSITION_BRANCH_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> {
+                    assertThat(f.severity()).isEqualTo(Severity.BREAKING);
+                    assertThat(f.detail()).contains("anyOf").contains("alternative removed");
+                });
+        assertThat(findings).filteredOn(f -> f.code().equals("RESP.COMPOSITION_BRANCH_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.INFO));
+        assertThat(findings).hasSize(2);
+
+        // boolean alternative added on the response only: the promise space widened
+        String widened = oldY.replace("properties: {w: {anyOf: [{type: string}, {type: number}]}}",
+                "properties: {w: {anyOf: [{type: string}, {type: number}, {type: boolean}]}}");
+        List<CompatibilityFinding> widenedFindings = diff(oldY, widened);
+        assertThat(widenedFindings).filteredOn(f -> f.code().equals("RESP.COMPOSITION_BRANCH_ADDED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+        assertThat(widenedFindings).filteredOn(f -> f.code().equals("REQ.COMPOSITION_BRANCH_ADDED"))
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("readOnly properties are invisible on the request side; writeOnly on the response side")
+    void readOnlyWriteOnly() {
+        String oldY = HEADER + """
+                  /a:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, required: [id, name], properties: {id: {type: string, readOnly: true}, name: {type: string}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {secret: {type: string, writeOnly: true}, name: {type: string}}}
+                """;
+        // the server-managed id disappears from the request contract and the
+        // client-supplied secret disappears from the response contract: neither can
+        // break anyone, while 'name' still appears on both sides unchanged
+        String newY = oldY
+                .replace("required: [id, name], properties: {id: {type: string, readOnly: true}, name: {type: string}}",
+                        "required: [name], properties: {name: {type: string}}")
+                .replace("properties: {secret: {type: string, writeOnly: true}, name: {type: string}}",
+                        "properties: {name: {type: string}}");
+        assertThat(diff(oldY, newY)).isEmpty();
+
+        // for contrast: removing a plain (unflagged) request property stays breaking
+        String unflagged = oldY.replace("{type: string, readOnly: true}", "{type: string}");
+        String stripped = unflagged
+                .replace("required: [id, name], properties: {id: {type: string}, name: {type: string}}",
+                        "required: [name], properties: {name: {type: string}}");
+        List<CompatibilityFinding> findings = diff(unflagged, stripped);
+        assertThat(findings).filteredOn(f -> f.code().equals("REQ.PROPERTY_REMOVED"))
+                .hasSize(1)
+                .allSatisfy(f -> assertThat(f.severity()).isEqualTo(Severity.BREAKING));
+    }
+
+    @Test
+    @DisplayName("refactoring locations into components ($ref wrappers) changes nothing on the wire")
+    void refactoringIntoComponentsIsInvisible() {
+        String inline = HEADER + """
+                  /a/{id}:
+                    post:
+                      parameters:
+                        - {name: id, in: path, required: true, schema: {type: string}}
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {type: object, properties: {x: {type: string}}}
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema: {type: object, properties: {y: {type: string}}}
+                """;
+        String referenced = HEADER + """
+                  /a/{id}:
+                    post:
+                      parameters:
+                        - {$ref: '#/components/parameters/Id'}
+                      requestBody: {$ref: '#/components/requestBodies/Body'}
+                      responses:
+                        '200': {$ref: '#/components/responses/Ok'}
+                components:
+                  parameters:
+                    Id: {name: id, in: path, required: true, schema: {type: string}}
+                  requestBodies:
+                    Body:
+                      content:
+                        application/json:
+                          schema: {type: object, properties: {x: {type: string}}}
+                  responses:
+                    Ok:
+                      description: ok
+                      content:
+                        application/json:
+                          schema: {type: object, properties: {y: {type: string}}}
+                """;
+        // previously produced a false REQUEST_BODY.REMOVED (breaking) plus
+        // PARAM.REMOVED and a schemaless response comparison
+        assertThat(diff(inline, referenced)).isEmpty();
+        assertThat(diff(referenced, inline)).isEmpty();
+    }
 }

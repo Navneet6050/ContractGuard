@@ -67,11 +67,11 @@ public class RegistryController {
         String title = request.title() == null || request.title().isBlank()
                 ? slug : request.title().trim();
         String who = actorOrAnonymous(actor);
-        long id = store.insertService(slug, title,
+        long id = store.registerService(slug, title,
                 request.ownerTeam() == null ? null : request.ownerTeam().trim(),
-                request.description() == null ? null : request.description().trim());
-        store.insertAuditEvent(slug, null, null, "SERVICE_REGISTERED", "registered", who, null,
-                "service registered (title: " + title + ")");
+                request.description() == null ? null : request.description().trim(), who,
+                new RegistryStore.AuditEntry("SERVICE_REGISTERED", "registered", null,
+                        "service registered (title: " + title + ")"));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);
         out.put("slug", slug);

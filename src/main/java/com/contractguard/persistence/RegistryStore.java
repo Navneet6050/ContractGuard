@@ -50,8 +50,9 @@ public class RegistryStore {
     }
 
     public record AttemptRow(long id, long serviceId, String incomingVersion, String sourceSha,
-                             String rawYaml, String canonicalJson, String state,
-                             int breakingCount, String requiredAction, String decisionJson,
+                             String sourceFilename, String rawYaml, String canonicalJson,
+                             String effectiveJson, String state, int breakingCount,
+                             String requiredAction, String decisionJson,
                              Instant createdAt, Instant decidedAt, String decidedBy,
                              String justification, String note) {
     }
@@ -132,6 +133,20 @@ public class RegistryStore {
             return ps;
         }, keys);
         return keys.getKey() == null ? -1 : keys.getKey().longValue();
+    }
+
+    /**
+     * Registers a service together with its SERVICE_REGISTERED audit row in ONE
+     * transaction: a crash between the two writes can never leave a service without
+     * its audit record (registration is only visible as a whole).
+     */
+    @Transactional
+    public long registerService(String slug, String title, String ownerTeam, String description,
+                                String actor, AuditEntry audit) {
+        long id = insertService(slug, title, ownerTeam, description);
+        insertAuditEvent(slug, null, null, audit.action(), audit.decision(), actor,
+                audit.justification(), audit.details());
+        return id;
     }
 
     private static final String SERVICE_COLUMNS =
@@ -222,42 +237,55 @@ public class RegistryStore {
     // ------------------------------------------------------------------ attempts
 
     private static final String ATTEMPT_COLUMNS =
-            "id, service_id, incoming_version, source_sha, raw_yaml, canonical_json, state, "
-                    + "breaking_count, required_action, decision_json, created_at, decided_at, "
-                    + "decided_by, justification, note";
+            "id, service_id, incoming_version, source_sha, source_filename, raw_yaml, "
+                    + "canonical_json, effective_json, state, breaking_count, required_action, "
+                    + "decision_json, created_at, decided_at, decided_by, justification, note";
 
     /**
      * Persists a gated attempt with its findings, per-consumer impacts and audit trail in
      * one transaction. {@code state} is a terminal-for-now gate state (pending_ack /
      * blocked) or auto_published (which then still needs its version row — the caller
      * invokes {@link #publishVersion} in the same logical step via
-     * {@link #publishGatedAttempt}).
+     * {@link #autoPublishAttempt}). The attempt row keeps the canonical AND effective
+     * forms that were evaluated, so a later human decision publishes exactly what the
+     * gate saw — even if the parser changed in between.
      */
     @Transactional
     public long insertGatedAttempt(long serviceId, String incomingVersion, String sourceSha,
-                                   String rawYaml, String canonicalJson, String state,
+                                   String sourceFilename, String rawYaml, String canonicalJson,
+                                   String effectiveJson, String state,
                                    int breakingCount, String requiredAction, String decisionJson,
                                    List<FindingWithImpacts> findings, String actor, AuditEntry audit) {
         KeyHolder keys = new GeneratedKeyHolder();
         jdbc.update(con -> {
             var ps = con.prepareStatement("""
                             INSERT INTO publication_attempts (service_id, incoming_version, source_sha,
-                                raw_yaml, canonical_json, state, breaking_count, required_action, decision_json)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                source_filename, raw_yaml, canonical_json, effective_json, state,
+                                breaking_count, required_action, decision_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                     new String[]{"id"});
             ps.setLong(1, serviceId);
             ps.setString(2, incomingVersion);
             ps.setString(3, sourceSha);
-            ps.setString(4, rawYaml);
-            ps.setString(5, canonicalJson);
-            ps.setString(6, state);
-            ps.setInt(7, breakingCount);
-            ps.setString(8, requiredAction);
-            ps.setString(9, decisionJson);
+            ps.setString(4, sourceFilename);
+            ps.setString(5, rawYaml);
+            ps.setString(6, canonicalJson);
+            ps.setString(7, effectiveJson);
+            ps.setString(8, state);
+            ps.setInt(9, breakingCount);
+            ps.setString(10, requiredAction);
+            ps.setString(11, decisionJson);
             return ps;
         }, keys);
         long attemptId = keys.getKey() == null ? -1 : keys.getKey().longValue();
+        // terminal-at-insert states are decided by the upload itself; record that now
+        // so changelog/history never show an auto-published or rejected attempt as
+        // undecided
+        if ("auto_published".equals(state)) {
+            jdbc.update("UPDATE publication_attempts SET decided_at = CURRENT_TIMESTAMP, "
+                    + "decided_by = ? WHERE id = ?", actor, attemptId);
+        }
 
         insertFindings(attemptId, findings);
         jdbc.update("""
@@ -275,23 +303,28 @@ public class RegistryStore {
     /** Persists a rejected attempt (invalid spec / duplicate / regression) with its audit row. */
     @Transactional
     public long insertRejectedAttempt(long serviceId, String incomingVersion, String sourceSha,
-                                      String rawYaml, String note, String actor, AuditEntry audit) {
+                                      String sourceFilename, String rawYaml, String note,
+                                      String actor, AuditEntry audit) {
         KeyHolder keys = new GeneratedKeyHolder();
         jdbc.update(con -> {
             var ps = con.prepareStatement("""
                             INSERT INTO publication_attempts (service_id, incoming_version, source_sha,
-                                raw_yaml, state, breaking_count, note)
-                            VALUES (?, ?, ?, ?, 'rejected', 0, ?)
+                                source_filename, raw_yaml, state, breaking_count, note)
+                            VALUES (?, ?, ?, ?, ?, 'rejected', 0, ?)
                             """,
                     new String[]{"id"});
             ps.setLong(1, serviceId);
             ps.setString(2, incomingVersion);
             ps.setString(3, sourceSha);
-            ps.setString(4, rawYaml);
-            ps.setString(5, note);
+            ps.setString(4, sourceFilename);
+            ps.setString(5, rawYaml);
+            ps.setString(6, note);
             return ps;
         }, keys);
         long attemptId = keys.getKey() == null ? -1 : keys.getKey().longValue();
+        // a rejection is terminal: the decision happened with this very upload
+        jdbc.update("UPDATE publication_attempts SET decided_at = CURRENT_TIMESTAMP, "
+                + "decided_by = ? WHERE id = ?", actor, attemptId);
         jdbc.update("INSERT INTO attempt_transitions (attempt_id, from_state, to_state, actor) "
                 + "VALUES (?, 'received', 'rejected', ?)", attemptId, actor);
         jdbc.update("""
@@ -312,9 +345,9 @@ public class RegistryStore {
                                    String sourceFilename, String rawYaml, String canonicalJson,
                                    String effectiveJson, String publishedBy, String decisionJson,
                                    List<FindingWithImpacts> findings, String actor, AuditEntry audit) {
-        long attemptId = insertGatedAttempt(serviceId, incomingVersion, sourceSha, rawYaml,
-                canonicalJson, "auto_published", 0, "none: publication permitted", decisionJson,
-                findings, actor, audit);
+        long attemptId = insertGatedAttempt(serviceId, incomingVersion, sourceSha, sourceFilename,
+                rawYaml, canonicalJson, effectiveJson, "auto_published", 0,
+                "none: publication permitted", decisionJson, findings, actor, audit);
         publishVersion(serviceId, incomingVersion, sourceSha, sourceFilename, rawYaml,
                 canonicalJson, effectiveJson, publishedBy);
         return attemptId;
@@ -324,23 +357,34 @@ public class RegistryStore {
      * Completes a human decision: appends the guarded transition, updates the attempt
      * state, writes the audit row and (for publish outcomes) stores the spec version —
      * atomically. The transition row is written BEFORE the state update so its
-     * {@code from_state} is the genuine previous state.
+     * {@code from_state} is the genuine previous state; the state update is guarded by
+     * the expected previous state so two concurrent decisions cannot both apply (the
+     * loser's transaction rolls back, including its transition and audit rows, via an
+     * IllegalStateException).
      */
     @Transactional
-    public void decideAndPublish(long attemptId, long serviceId, String slug, String version,
-                                 String previousState, String sourceSha, String sourceFilename,
-                                 String rawYaml, String canonicalJson, String effectiveJson,
-                                 String newState, String actor, String justification,
-                                 String auditAction, String auditDetails) {
+    public boolean decideAndPublish(long attemptId, long serviceId, String slug, String version,
+                                    String previousState, String sourceSha, String sourceFilename,
+                                    String rawYaml, String canonicalJson, String effectiveJson,
+                                    String newState, String actor, String justification,
+                                    String auditAction, String auditDetails) {
         jdbc.update("INSERT INTO attempt_transitions (attempt_id, from_state, to_state, actor, comment) "
                         + "VALUES (?, ?, ?, ?, ?)",
                 attemptId, previousState, newState, actor, justification);
-        jdbc.update("UPDATE publication_attempts SET state = ?, decided_at = CURRENT_TIMESTAMP, "
-                + "decided_by = ?, justification = COALESCE(?, justification) WHERE id = ?",
-                newState, actor, justification, attemptId);
         jdbc.update("INSERT INTO audit_events (service, version, attempt_id, action, decision, actor, justification, details) "
                 + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", slug, version, attemptId, auditAction, newState,
                 actor, justification, auditDetails);
+        // the guarded state update is the serialization point: only the decision that
+        // still sees the expected previous state may proceed; everything written above
+        // rolls back with the loser's transaction
+        int updated = jdbc.update("UPDATE publication_attempts SET state = ?, "
+                + "decided_at = CURRENT_TIMESTAMP, decided_by = ?, "
+                + "justification = COALESCE(?, justification) WHERE id = ? AND state = ?",
+                newState, actor, justification, attemptId, previousState);
+        if (updated == 0) {
+            throw new IllegalStateException("attempt " + attemptId + " is no longer in state '"
+                    + previousState + "' (concurrently decided)");
+        }
         if (canonicalJson != null) {
             jdbc.update("UPDATE spec_versions SET state = 'superseded' "
                     + "WHERE service_id = ? AND state = 'published'", serviceId);
@@ -352,6 +396,7 @@ public class RegistryStore {
                     serviceId, version, sourceSha, sourceFilename, rawYaml, canonicalJson,
                     effectiveJson, actor);
         }
+        return true;
     }
 
     private void insertFindings(long attemptId, List<FindingWithImpacts> findings) {
@@ -406,8 +451,10 @@ public class RegistryStore {
 
     private static AttemptRow attemptRow(java.sql.ResultSet rs, int i) throws java.sql.SQLException {
         return new AttemptRow(rs.getLong("id"), rs.getLong("service_id"),
-                rs.getString("incoming_version"), rs.getString("source_sha"), rs.getString("raw_yaml"),
-                rs.getString("canonical_json"), rs.getString("state"), rs.getInt("breaking_count"),
+                rs.getString("incoming_version"), rs.getString("source_sha"),
+                rs.getString("source_filename"), rs.getString("raw_yaml"),
+                rs.getString("canonical_json"), rs.getString("effective_json"),
+                rs.getString("state"), rs.getInt("breaking_count"),
                 rs.getString("required_action"), rs.getString("decision_json"),
                 toInstant(rs.getTimestamp("created_at")), toInstant(rs.getTimestamp("decided_at")),
                 rs.getString("decided_by"), rs.getString("justification"), rs.getString("note"));
@@ -507,7 +554,12 @@ public class RegistryStore {
 
     // ------------------------------------------------------------------ metrics
 
-    /** Aggregated registry/workflow metrics (all from real rows; no sampling). */
+    /**
+     * Aggregated registry/workflow metrics (all from real rows; no sampling). All
+     * queries run in one read-only transaction on one connection so the numbers come
+     * from one coherent point in time as far as READ_COMMITTED allows.
+     */
+    @Transactional(readOnly = true)
     public Map<String, Object> metrics() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("services", scalar("SELECT COUNT(*) FROM services"));

@@ -31,8 +31,10 @@ CREATE TABLE IF NOT EXISTS publication_attempts (
     service_id        BIGINT NOT NULL REFERENCES services(id),
     incoming_version  VARCHAR(64) NOT NULL,
     source_sha        VARCHAR(64) NOT NULL,
+    source_filename   VARCHAR(255),
     raw_yaml          CLOB NOT NULL,
     canonical_json    CLOB,
+    effective_json    CLOB,
     state             VARCHAR(32) NOT NULL CHECK (state IN (
                         'received', 'rejected', 'auto_published', 'pending_ack',
                         'blocked', 'published', 'overridden_published',
@@ -110,7 +112,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     version       VARCHAR(64),
     payload_json  CLOB NOT NULL,
     target_url    VARCHAR(512) NOT NULL,
-    status        VARCHAR(32) NOT NULL,
+    status        VARCHAR(255) NOT NULL,
     created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     delivered_at  TIMESTAMP
 );
@@ -137,3 +139,7 @@ ALTER TABLE services ADD COLUMN IF NOT EXISTS description VARCHAR(1024);
 ALTER TABLE spec_versions ADD COLUMN IF NOT EXISTS published_by VARCHAR(255) NOT NULL DEFAULT 'anonymous';
 ALTER TABLE publication_attempts ADD COLUMN IF NOT EXISTS decision_json CLOB;
 ALTER TABLE publication_attempts ALTER COLUMN required_action VARCHAR(255);
+ALTER TABLE publication_attempts ADD COLUMN IF NOT EXISTS source_filename VARCHAR(255);
+ALTER TABLE publication_attempts ADD COLUMN IF NOT EXISTS effective_json CLOB;
+-- failed-delivery statuses record the exception class name and can exceed 32 chars
+ALTER TABLE notifications ALTER COLUMN status VARCHAR(255);

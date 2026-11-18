@@ -100,8 +100,8 @@ public class PublicationService {
         try {
             doc = specParser.parse(yaml);
         } catch (SpecParseException e) {
-            long attemptId = store.insertRejectedAttempt(service.id(), "(unknown)", sha, yaml,
-                    errorText(e.getErrors()), actor,
+            long attemptId = store.insertRejectedAttempt(service.id(), "(unknown)", sha,
+                    displayFilename, yaml, errorText(e.getErrors()), actor,
                     new RegistryStore.AuditEntry("SPEC_REJECTED", "rejected", null,
                             "invalid specification (" + e.getErrors().size()
                                     + " error(s)); nothing stored"));
@@ -121,7 +121,8 @@ public class PublicationService {
                 out.put("message", "this exact version is already registered (idempotent no-op)");
                 return out;
             }
-            long attemptId = store.insertRejectedAttempt(service.id(), version, sha, yaml,
+            long attemptId = store.insertRejectedAttempt(service.id(), version, sha,
+                    displayFilename, yaml,
                     "duplicate version with different content", actor,
                     new RegistryStore.AuditEntry("SPEC_REJECTED", "rejected", null,
                             "version " + version + " is already registered with different content"));
@@ -136,7 +137,7 @@ public class PublicationService {
             Optional<Semver> newSemver = Semver.parse(version);
             if (oldSemver.isPresent() && newSemver.isPresent()
                     && newSemver.get().compareTo(oldSemver.get()) < 0) {
-                store.insertRejectedAttempt(service.id(), version, sha, yaml,
+                store.insertRejectedAttempt(service.id(), version, sha, displayFilename, yaml,
                         "version regression", actor,
                         new RegistryStore.AuditEntry("SPEC_REJECTED", "rejected", null,
                                 "version regression: " + version + " < current "
@@ -180,16 +181,16 @@ public class PublicationService {
                 return attemptDetail(attemptId);
             }
             case PENDING_ACK -> {
-                long attemptId = store.insertGatedAttempt(service.id(), version, sha, yaml,
-                        doc.getCanonicalJson(), "pending_ack", breaking,
+                long attemptId = store.insertGatedAttempt(service.id(), version, sha, filename,
+                        yaml, doc.getCanonicalJson(), effectiveJson, "pending_ack", breaking,
                         evaluation.decision().requiredAction(), decisionJson, prepared, actor,
                         new RegistryStore.AuditEntry("SPEC_UPLOADED", "pending_ack", null,
                                 details + " - acknowledgment required before publication"));
                 return attemptDetail(attemptId);
             }
             default -> { // BLOCK
-                long attemptId = store.insertGatedAttempt(service.id(), version, sha, yaml,
-                        doc.getCanonicalJson(), "blocked", breaking,
+                long attemptId = store.insertGatedAttempt(service.id(), version, sha, filename,
+                        yaml, doc.getCanonicalJson(), effectiveJson, "blocked", breaking,
                         evaluation.decision().requiredAction(), decisionJson, prepared, actor,
                         new RegistryStore.AuditEntry("SPEC_UPLOADED", "blocked", null,
                                 details + " - blocked; affected consumers: "
@@ -300,17 +301,26 @@ public class PublicationService {
                                        String actor, String justification, String auditAction,
                                        String auditDetails, boolean notify) {
         String slug = store.serviceSlug(attempt.serviceId()).orElse("(unknown)");
-        // the attempt was validated at upload time; re-parse is guaranteed to succeed
-        SpecDocument doc = specParser.parse(attempt.rawYaml());
-        String version = doc.getSpecVersion();
+        // publish exactly what the gate evaluated: the attempt row stores the canonical
+        // and effective forms captured at upload, so a decision made after a restart or
+        // a parser change still persists the evaluated contract (never a re-derivation)
+        String version = attempt.incomingVersion();
         // only publish outcomes make the version current; abandon/reject never store one
         boolean publishOutcome = "published".equals(newState) || "overridden_published".equals(newState);
-        store.decideAndPublish(attempt.id(), attempt.serviceId(), slug, version, attempt.state(),
-                attempt.sourceSha(), null, attempt.rawYaml(),
-                publishOutcome ? doc.getCanonicalJson() : null,
-                publishOutcome ? JSON.writeValueAsString(doc.getEffectiveSchemas()) : null,
-                newState, actor, justification, auditAction,
-                auditDetails + " (version " + version + ")");
+        try {
+            store.decideAndPublish(attempt.id(), attempt.serviceId(), slug, version,
+                    attempt.state(), attempt.sourceSha(), attempt.sourceFilename(),
+                    attempt.rawYaml(),
+                    publishOutcome ? attempt.canonicalJson() : null,
+                    publishOutcome ? attempt.effectiveJson() : null,
+                    newState, actor, justification, auditAction,
+                    auditDetails + " (version " + version + ")");
+        } catch (IllegalStateException e) {
+            // the attempt's state update lost a concurrent race; its transaction already
+            // rolled back, so nothing was partially written
+            throw new ConflictException("attempt " + attempt.id() + " was decided concurrently: "
+                    + e.getMessage());
+        }
         if (notify) {
             List<String> affected = store.affectedConsumers(attempt.id());
             notifier.deliver(newState, slug, version, webhookPayload(newState, slug, version,
